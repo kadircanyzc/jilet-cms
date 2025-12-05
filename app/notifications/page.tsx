@@ -495,6 +495,10 @@ export default function NotificationsPage() {
   }
 
   const getRecipientCount = async (): Promise<number> => {
+    // Topic-based notifications don't have a count
+    if (target.startsWith('topic_')) {
+      return -1 // Special value indicating topic-based
+    }
     if (target === 'custom') {
       return selectedUsers.length
     }
@@ -503,9 +507,11 @@ export default function NotificationsPage() {
   }
 
   const [recipientCount, setRecipientCount] = useState(0)
+  const [isTopicTarget, setIsTopicTarget] = useState(false)
 
   useEffect(() => {
     const updateRecipientCount = async () => {
+      setIsTopicTarget(target.startsWith('topic_'))
       const count = await getRecipientCount()
       setRecipientCount(count)
     }
@@ -570,6 +576,17 @@ export default function NotificationsPage() {
                   <label className="block text-sm font-medium text-muted-foreground mb-3">
                     Hedef Kitle
                   </label>
+
+                  {/* Topic Bilgilendirmesi */}
+                  {isTopicTarget && (
+                    <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-[var(--radius)]">
+                      <p className="text-sm text-blue-800 dark:text-blue-200">
+                        <strong>ℹ️ Bilgi:</strong> Topic bildirimleri mobil uygulamaya topic subscription kodu eklendikten sonra çalışır.
+                        Detaylar için <code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">HOW_TO_SEND_TO_ALL_USERS.md</code> dosyasına bakın.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="space-y-2">
                     {[
                       { value: 'topic_all_app_users', label: '📱 Tüm App Kullanıcıları (Topic - Giriş Gerekmez)' },
@@ -696,7 +713,14 @@ export default function NotificationsPage() {
               {/* Alıcı Sayısı */}
               <div className="mb-4 p-3 bg-muted rounded-[var(--radius)]">
                 <p className="text-sm text-muted-foreground">Alıcı Sayısı</p>
-                <p className="text-2xl font-bold text-foreground">{recipientCount}</p>
+                {isTopicTarget ? (
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">📱 Topic</p>
+                    <p className="text-xs text-muted-foreground mt-1">Abone sayısı Firebase tarafından bilinmiyor</p>
+                  </div>
+                ) : (
+                  <p className="text-2xl font-bold text-foreground">{recipientCount}</p>
+                )}
               </div>
 
               {/* Bildirim Kartı */}
@@ -809,7 +833,7 @@ export default function NotificationsPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-card-foreground">
-                          {log.recipientCount.toLocaleString('tr-TR')}
+                          {log.recipientCount === -1 ? '📱 Topic' : log.recipientCount.toLocaleString('tr-TR')}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -838,7 +862,15 @@ export default function NotificationsPage() {
               <h3 className="text-lg font-semibold text-card-foreground mb-4">Bildirim Gönderilsin mi?</h3>
               <div className="space-y-3 mb-6">
                 <p className="text-sm text-muted-foreground">
-                  <span className="font-medium text-foreground">{recipientCount} kişiye</span> bildirim gönderilecek.
+                  {isTopicTarget ? (
+                    <>
+                      📱 <span className="font-medium text-foreground">Topic'e abone olan tüm kullanıcılara</span> bildirim gönderilecek.
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium text-foreground">{recipientCount} kişiye</span> bildirim gönderilecek.
+                    </>
+                  )}
                 </p>
                 <div className="p-3 bg-muted rounded-[var(--radius)] space-y-1">
                   <p className="text-sm"><span className="font-medium">Başlık:</span> {title}</p>
