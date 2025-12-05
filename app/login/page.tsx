@@ -29,7 +29,12 @@ export default function LoginPage() {
 
     try {
       await signIn(email, password)
+
+      // Wait a bit for cookie to be set
+      await new Promise(resolve => setTimeout(resolve, 500))
+
       const redirect = searchParams.get('redirect') || '/'
+      console.log('🔄 Redirecting to:', redirect)
       router.push(redirect)
     } catch (error: any) {
       console.error('Login error:', error)

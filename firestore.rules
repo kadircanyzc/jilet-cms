@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      // Users can read and write their own data
+      allow read, write: if isOwner(userId);
+    }
+
+    // Barbers collection
+    match /barbers/{barberId} {
+      // Anyone can read barber data (for discovering barbers)
+      allow read: if true;
+
+      // Only the barber owner can write
+      allow write: if isOwner(barberId);
+
+      // Barber slots subcollection
+      match /slots/{slotId} {
+        // Anyone can read slots (for booking)
+        allow read: if true;
+
+        // Only barber owner can write slots
+        allow write: if isOwner(barberId);
+      }
+
+      // Barber employees subcollection
+      match /employees/{employeeId} {
+        // Anyone authenticated can read employees (for selection during booking)
+        allow read: if isSignedIn();
+
+        // Only barber owner can write employees
+        allow write: if isOwner(barberId);
+      }
+
+      // Barber services subcollection
+      match /services/{serviceId} {
+        // Anyone can read services (for booking)
+        allow read: if true;
+
+        // Only barber owner can write services
+        allow write: if isOwner(barberId);
+      }
+    }
+
+    // Appointments collection - CRITICAL FOR FIXING THE ERROR
+    match /appointments/{appointmentId} {
+      // Allow read if:
+      // - User owns the appointment (userId matches)
+      // - User is the barber who owns the appointment (barberId matches)
+      // - User is the employee assigned to the appointment (employeeId matches)
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.barberId == request.auth.uid ||
+        resource.data.employeeId == request.auth.uid
+      );
+
+      // Allow create if:
+      // - User is authenticated and creating their own appointment
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+
+      // Allow update if:
+      // - User owns the appointment (can cancel their own)
+      // - User is the barber owner (can confirm/cancel/complete)
+      // - User is the assigned employee (can confirm/cancel/complete their appointments)
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.barberId == request.auth.uid ||
+        resource.data.employeeId == request.auth.uid
+      );
+
+      // Allow delete if:
+      // - User owns the appointment OR
+      // - User is the barber owner
+      allow delete: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.barberId == request.auth.uid
+      );
+    }
+
+    // Favorites collection
+    match /favorites/{favoriteId} {
+      // Users can read and write their own favorites
+      allow read, write: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Reviews collection
+    match /reviews/{reviewId} {
+      // Anyone can read reviews
+      allow read: if true;
+
+      // Only the review author can write
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Notifications collection
+    match /notifications/{notificationId} {
+      // Users can read their own notifications (check both userId and recipientId)
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+
+      // System can create notifications (via Cloud Functions or Admin SDK)
+      allow create: if true;  // Allow creation from anywhere (Cloud Functions, Admin SDK)
+
+      // Users can update their own notifications (mark as read)
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+    }
+
+    // Admins collection - CMS admin users
+    match /admins/{adminId} {
+      // Allow read for authenticated users (to check admin status during login)
+      allow read: if isSignedIn();
+
+      // Allow create for new admins (initial setup or admin creation)
+      allow create: if true;  // Allow creation from Admin SDK
+
+      // Allow update/delete only for the admin themselves
+      allow update, delete: if isSignedIn() && request.auth.uid == adminId;
+    }
+
+    // Default: deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

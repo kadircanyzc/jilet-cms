@@ -79,7 +79,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
             // Set auth token in cookie for middleware
             const token = await firebaseUser.getIdToken()
+            console.log('🍪 Setting auth cookie')
             document.cookie = `firebase-auth-token=${token}; path=/; max-age=3600; SameSite=Lax`
+            console.log('✅ Auth cookie set')
           } else {
             // Not an admin user
             await auth.signOut()
@@ -105,12 +107,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signInUser = async (email: string, password: string) => {
-    const userCredential = await signInWithEmailAndPassword(auth, email, password)
-    const adminDoc = await getDoc(doc(db, 'admins', userCredential.user.uid))
+    console.log('🔐 Attempting sign in with:', email)
 
-    if (!adminDoc.exists()) {
-      await auth.signOut()
-      throw new Error('Bu hesap admin yetkisine sahip değil!')
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password)
+      console.log('✅ Firebase auth successful, UID:', userCredential.user.uid)
+
+      const adminDoc = await getDoc(doc(db, 'admins', userCredential.user.uid))
+      console.log('📄 Admin doc exists:', adminDoc.exists())
+
+      if (adminDoc.exists()) {
+        console.log('✅ Admin data:', adminDoc.data())
+      }
+
+      if (!adminDoc.exists()) {
+        console.error('❌ Admin document not found for UID:', userCredential.user.uid)
+        await auth.signOut()
+        throw new Error('Bu hesap admin yetkisine sahip değil!')
+      }
+
+      console.log('✅ Sign in successful!')
+    } catch (error) {
+      console.error('❌ Sign in error:', error)
+      throw error
     }
   }
 

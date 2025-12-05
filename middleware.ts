@@ -30,24 +30,29 @@ export function middleware(request: NextRequest) {
   }
 
   // Check for Firebase auth token in cookies
-  // Firebase sets __session cookie or custom auth token
   const authToken = request.cookies.get('__session')?.value
   const firebaseToken = request.cookies.get('firebase-auth-token')?.value
 
-  // Also check for Firebase Auth state in localStorage (client-side only)
-  // We'll check for the presence of any Firebase auth cookies
-  const hasFirebaseAuth =
-    authToken ||
-    firebaseToken ||
-    request.cookies.get('firebase:authUser:AIzaSyDvHXqfYhep4VnaoitI-I72mjG8iuhusi0:[DEFAULT]')?.value
+  // Debug: Log all cookies
+  console.log('🔍 Middleware check for:', pathname)
+  console.log('🍪 Cookies:', {
+    __session: authToken ? 'present' : 'missing',
+    'firebase-auth-token': firebaseToken ? 'present' : 'missing',
+    all: Array.from(request.cookies.getAll().map(c => c.name))
+  })
+
+  // Check for the presence of any Firebase auth cookies
+  const hasFirebaseAuth = authToken || firebaseToken
 
   // If no auth token found, redirect to login
   if (!hasFirebaseAuth) {
+    console.log('❌ No auth token found, redirecting to login')
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('redirect', pathname)
     return NextResponse.redirect(loginUrl)
   }
 
+  console.log('✅ Auth token found, allowing request')
   // Allow authenticated requests
   return NextResponse.next()
 }

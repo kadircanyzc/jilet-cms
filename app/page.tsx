@@ -47,9 +47,7 @@ export default function Home() {
 
         // Toplam Berberler
         console.log('👨‍💼 Fetching barbers...')
-        const barbersSnapshot = await getDocs(
-          query(collection(db, 'barbers'), where('role', '==', 'barber'))
-        )
+        const barbersSnapshot = await getDocs(collection(db, 'barbers'))
         const totalBarbers = barbersSnapshot.size
         console.log('✅ Barbers fetched:', totalBarbers)
 

@@ -27,7 +27,7 @@ interface FCMStats {
   monthNotifications: number
 }
 
-type TargetType = 'all_users' | 'all_barbers' | 'all_employees' | 'all_barbers_employees' | 'all_app_users' | 'custom'
+type TargetType = 'all_users' | 'all_barbers' | 'all_employees' | 'all_barbers_employees' | 'all_app_users' | 'custom' | 'topic_all_app_users' | 'topic_all_customers' | 'topic_all_barbers' | 'topic_all_employees'
 type NotificationType = 'general' | 'promotion' | 'announcement' | 'reminder'
 
 interface SelectedUser {
@@ -58,6 +58,13 @@ export default function NotificationsPage() {
   const [selectedUsers, setSelectedUsers] = useState<SelectedUser[]>([])
   const [availableUsers, setAvailableUsers] = useState<SelectedUser[]>([])
 
+  // useEffect her zaman aynı sırada çağrılmalı (hooks kuralı)
+  useEffect(() => {
+    if (user && (user.role === 'super_admin' || user.role === 'admin')) {
+      fetchData()
+    }
+  }, [user])
+
   // Yetki kontrolü
   if (!user || (user.role !== 'super_admin' && user.role !== 'admin')) {
     return (
@@ -73,52 +80,71 @@ export default function NotificationsPage() {
     )
   }
 
-  useEffect(() => {
-    fetchData()
-  }, [])
-
   const fetchData = async () => {
     try {
       setLoading(true)
 
-      // İstatistikleri topla
-      const usersSnapshot = await getDocs(collection(db, 'users'))
-      const barbersSnapshot = await getDocs(collection(db, 'barbers'))
-      const employeesSnapshot = await getDocs(collection(db, 'employees'))
+      // İstatistikleri topla - her biri için ayrı try-catch
+      let usersSnapshot: any = { docs: [] }
+      let barbersSnapshot: any = { docs: [] }
+      let employeesSnapshot: any = { docs: [] }
+
+      try {
+        usersSnapshot = await getDocs(collection(db, 'users'))
+      } catch (error) {
+        console.error('Error fetching users:', error)
+      }
+
+      try {
+        barbersSnapshot = await getDocs(collection(db, 'barbers'))
+      } catch (error) {
+        console.error('Error fetching barbers:', error)
+      }
+
+      try {
+        employeesSnapshot = await getDocs(collection(db, 'employees'))
+      } catch (error) {
+        console.error('Error fetching employees:', error)
+      }
 
       // FCM token sayılarını hesapla
       let usersWithToken = 0
       let barbersWithToken = 0
       let employeesWithToken = 0
 
-      usersSnapshot.docs.forEach(doc => {
+      usersSnapshot.docs.forEach((doc: any) => {
         if (doc.data().fcmToken) usersWithToken++
       })
 
-      barbersSnapshot.docs.forEach(doc => {
+      barbersSnapshot.docs.forEach((doc: any) => {
         if (doc.data().fcmToken) barbersWithToken++
       })
 
-      employeesSnapshot.docs.forEach(doc => {
+      employeesSnapshot.docs.forEach((doc: any) => {
         if (doc.data().fcmToken) employeesWithToken++
       })
 
       // Bu ay gönderilen bildirimler
-      const now = new Date()
-      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      let logsSnapshot: any = { docs: [], size: 0 }
+      try {
+        const now = new Date()
+        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
-      const logsSnapshot = await getDocs(
-        query(
-          collection(db, 'notification_logs'),
-          where('sentAt', '>=', Timestamp.fromDate(firstDayOfMonth)),
-          orderBy('sentAt', 'desc')
+        logsSnapshot = await getDocs(
+          query(
+            collection(db, 'notification_logs'),
+            where('sentAt', '>=', Timestamp.fromDate(firstDayOfMonth)),
+            orderBy('sentAt', 'desc')
+          )
         )
-      )
+      } catch (error) {
+        console.error('Error fetching notification logs:', error)
+      }
 
-      const logsData: NotificationLog[] = logsSnapshot.docs.map(doc => ({
+      const logsData: NotificationLog[] = logsSnapshot.docs.map((doc: any) => ({
         id: doc.id,
         ...doc.data(),
-        sentAt: doc.data().sentAt.toDate(),
+        sentAt: doc.data().sentAt?.toDate() || new Date(),
       } as NotificationLog))
 
       setStats({
@@ -304,7 +330,57 @@ export default function NotificationsPage() {
     setShowModal(false)
 
     try {
-      // Token'ları topla
+      // Topic-based notification check
+      if (target.startsWith('topic_')) {
+        // Extract topic name (e.g., "topic_all_app_users" -> "all_app_users")
+        const topicName = target.replace('topic_', '')
+
+        // Send to topic
+        const response = await fetch('/api/notifications/send-topic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            topic: topicName,
+            title,
+            body,
+            type: notificationType,
+          }),
+        })
+
+        const result = await response.json()
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Topic bildirimi gönderilemedi')
+        }
+
+        console.log('✅ Topic notification sent:', result)
+
+        // Firestore'a log kaydı
+        await addDoc(collection(db, 'notification_logs'), {
+          title,
+          body,
+          type: notificationType,
+          target: getTargetLabel(target),
+          recipientCount: -1, // Topic'lerde alıcı sayısı bilinmez
+          sentBy: user?.email || 'admin',
+          sentAt: Timestamp.now(),
+          status: 'success',
+        })
+
+        alert(`📱 Bildirim başarıyla "${topicName}" topic'ine gönderildi!`)
+
+        // Formu temizle
+        setTitle('')
+        setBody('')
+        setNotificationType('general')
+        setTarget('all_users')
+        setSelectedUsers([])
+
+        fetchData()
+        return
+      }
+
+      // Token-based notification (existing code)
       const { tokens, userIds } = await collectFCMTokens(target)
 
       if (tokens.length === 0) {
@@ -387,12 +463,16 @@ export default function NotificationsPage() {
 
   const getTargetLabel = (targetType: TargetType): string => {
     const labels: Record<TargetType, string> = {
-      all_users: 'Tüm Kullanıcılar',
-      all_barbers: 'Tüm Berberler',
-      all_employees: 'Tüm Çalışanlar',
-      all_barbers_employees: 'Tüm Berber ve Çalışanlar',
-      all_app_users: 'Tüm Uygulama Kullanıcıları',
+      all_users: 'Tüm Kullanıcılar (Giriş Yapmış)',
+      all_barbers: 'Tüm Berberler (Giriş Yapmış)',
+      all_employees: 'Tüm Çalışanlar (Giriş Yapmış)',
+      all_barbers_employees: 'Tüm Berber ve Çalışanlar (Giriş Yapmış)',
+      all_app_users: 'Tüm Uygulama Kullanıcıları (Giriş Yapmış)',
       custom: 'Özel Seçim',
+      topic_all_app_users: '📱 Tüm App Kullanıcıları (Topic - Giriş Gerekmez)',
+      topic_all_customers: '📱 Tüm Müşteriler (Topic)',
+      topic_all_barbers: '📱 Tüm Berberler (Topic)',
+      topic_all_employees: '📱 Tüm Çalışanlar (Topic)',
     }
     return labels[targetType]
   }
@@ -492,11 +572,15 @@ export default function NotificationsPage() {
                   </label>
                   <div className="space-y-2">
                     {[
-                      { value: 'all_users', label: 'Tüm Kullanıcılar' },
-                      { value: 'all_barbers', label: 'Tüm Berberler' },
-                      { value: 'all_employees', label: 'Tüm Çalışanlar' },
-                      { value: 'all_barbers_employees', label: 'Tüm Berber ve Çalışanlar' },
-                      { value: 'all_app_users', label: 'Tüm Uygulama Kullanıcıları (Herkes)' },
+                      { value: 'topic_all_app_users', label: '📱 Tüm App Kullanıcıları (Topic - Giriş Gerekmez)' },
+                      { value: 'topic_all_customers', label: '📱 Tüm Müşteriler (Topic)' },
+                      { value: 'topic_all_barbers', label: '📱 Tüm Berberler (Topic)' },
+                      { value: 'topic_all_employees', label: '📱 Tüm Çalışanlar (Topic)' },
+                      { value: 'all_users', label: 'Tüm Kullanıcılar (Giriş Yapmış)' },
+                      { value: 'all_barbers', label: 'Tüm Berberler (Giriş Yapmış)' },
+                      { value: 'all_employees', label: 'Tüm Çalışanlar (Giriş Yapmış)' },
+                      { value: 'all_barbers_employees', label: 'Tüm Berber ve Çalışanlar (Giriş Yapmış)' },
+                      { value: 'all_app_users', label: 'Tüm Uygulama Kullanıcıları (Herkes - Giriş Yapmış)' },
                       { value: 'custom', label: 'Özel Seçim' },
                     ].map((option) => (
                       <label key={option.value} className="flex items-center space-x-3 cursor-pointer">
