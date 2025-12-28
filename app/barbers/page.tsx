@@ -3,8 +3,6 @@
 import DashboardLayout from '@/components/DashboardLayout'
 import AnalyticsCard from '@/components/AnalyticsCard'
 import { useEffect, useState } from 'react'
-import { db } from '@/lib/firebase'
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
 import { Scissors, Star, TrendingUp, Users, Calendar, Award, Eye } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
@@ -58,150 +56,22 @@ export default function BarbersPage() {
   useEffect(() => {
     const fetchBarberStats = async () => {
       try {
-        const now = new Date()
-        const thirtyDaysAgo = new Date()
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+        // Fetch data from API endpoint (uses Firebase Admin SDK)
+        const response = await fetch('/api/admin/barber-stats')
 
-        const sixtyDaysAgo = new Date()
-        sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60)
-
-        // Toplam Berberler
-        const barbersSnapshot = await getDocs(
-          query(collection(db, 'barbers'), where('role', '==', 'barber'))
-        )
-        const totalBarbers = barbersSnapshot.size
-
-        // Yeni berberler (son 30 gün)
-        const newBarbers = barbersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        }).length
-
-        const previousNewBarbers = barbersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= sixtyDaysAgo && createdAt < thirtyDaysAgo
-        }).length
-
-        const barbersChange = previousNewBarbers > 0
-          ? ((newBarbers - previousNewBarbers) / previousNewBarbers) * 100
-          : newBarbers > 0 ? 100 : 0
-
-        // Toplam Çalışanlar/Ustalar
-        const employeesSnapshot = await getDocs(collection(db, 'employees'))
-        const totalEmployees = employeesSnapshot.size
-
-        const newEmployees = employeesSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        }).length
-
-        const previousNewEmployees = employeesSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= sixtyDaysAgo && createdAt < thirtyDaysAgo
-        }).length
-
-        const employeesChange = previousNewEmployees > 0
-          ? ((newEmployees - previousNewEmployees) / previousNewEmployees) * 100
-          : newEmployees > 0 ? 100 : 0
-
-        // Randevular
-        const appointmentsSnapshot = await getDocs(collection(db, 'appointments'))
-
-        // Berber başına ortalama randevu
-        const avgAppointmentsPerBarber = totalBarbers > 0
-          ? Math.round(appointmentsSnapshot.size / totalBarbers)
-          : 0
-
-        // En çok randevu alan berberleri bul
-        const barberAppointments = new Map<string, number>()
-        appointmentsSnapshot.docs.forEach(doc => {
-          const data = doc.data()
-          const barberId = data.barberId
-          if (barberId) {
-            barberAppointments.set(barberId, (barberAppointments.get(barberId) || 0) + 1)
-          }
-        })
-
-        // En çok randevu alan top 5 berber
-        const sortedBarbers = Array.from(barberAppointments.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-
-        const topBarbersData: TopBarber[] = []
-        for (const [barberId, count] of sortedBarbers) {
-          const barberDoc = barbersSnapshot.docs.find(doc => doc.id === barberId)
-          if (barberDoc) {
-            const data = barberDoc.data()
-            topBarbersData.push({
-              id: barberId,
-              name: data.name || data.shopName || 'İsimsiz Berber',
-              appointmentCount: count,
-              rating: data.rating || 4.5,
-              city: data.city || 'Belirtilmemiş',
-            })
-          }
+        if (!response.ok) {
+          throw new Error('Failed to fetch barber statistics')
         }
 
-        setTopBarbers(topBarbersData)
+        const data = await response.json()
 
-        // All barbers for the list
-        const allBarbersData: BarberItem[] = barbersSnapshot.docs.map(doc => {
-          const data = doc.data()
-          return {
-            id: doc.id,
-            name: data.name || data.shopName || 'İsimsiz Berber',
-            email: data.email || '',
-            phone: data.phone || '',
-            city: data.city || '',
-            district: data.district || '',
-            rating: data.rating || 0,
-            active: data.active !== false,
-            createdAt: data.createdAt,
-          }
-        })
-
-        // Sort by creation date (newest first)
-        allBarbersData.sort((a, b) => {
-          const aDate = a.createdAt?.toDate?.() || new Date(0)
-          const bDate = b.createdAt?.toDate?.() || new Date(0)
-          return bDate.getTime() - aDate.getTime()
-        })
-
-        setAllBarbers(allBarbersData)
-
-        // 4+ yıldızlı berberler
-        const topRatedCount = barbersSnapshot.docs.filter(doc => {
-          const rating = doc.data().rating || 0
-          return rating >= 4.0
-        }).length
-
-        // Doluluk oranı (son 30 gün için)
-        const recentAppointments = appointmentsSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        }).length
-
-        // Ortalama doluluk oranı (her berber için maksimum 100 randevu varsayımı)
-        const maxPossibleAppointments = totalBarbers * 100
-        const avgOccupancyRate = maxPossibleAppointments > 0
-          ? Math.round((recentAppointments / maxPossibleAppointments) * 100)
-          : 0
-
-        setStats({
-          totalBarbers,
-          totalEmployees,
-          avgAppointmentsPerBarber,
-          avgOccupancyRate,
-          topRatedCount,
-          newBarbersThisMonth: newBarbers,
-          barbersChange: Math.round(barbersChange * 10) / 10,
-          employeesChange: Math.round(employeesChange * 10) / 10,
-        })
+        if (data.success) {
+          setStats(data.stats)
+          setTopBarbers(data.topBarbers)
+          setAllBarbers(data.allBarbers)
+        } else {
+          throw new Error(data.error || 'Unknown error')
+        }
       } catch (error) {
         console.error('Error fetching barber stats:', error)
       } finally {

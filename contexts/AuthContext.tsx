@@ -65,11 +65,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          // Check if user is admin
+          console.log('🔐 User authenticated:', firebaseUser.uid)
+          
+          // Force token refresh
+          await firebaseUser.getIdToken(true)
+          
+          // Wait a moment for token to propagate
+          await new Promise(resolve => setTimeout(resolve, 500))
+          
+          // Check if user is admin - now can read own document
+          console.log('📄 Checking admin document...')
           const adminDoc = await getDoc(doc(db, 'admins', firebaseUser.uid))
 
           if (adminDoc.exists()) {
             const adminData = adminDoc.data()
+            console.log('✅ Admin document found:', adminData)
+            
             setUser({
               uid: firebaseUser.uid,
               email: firebaseUser.email || '',
@@ -81,18 +92,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const token = await firebaseUser.getIdToken()
             console.log('🍪 Setting auth cookie')
             document.cookie = `firebase-auth-token=${token}; path=/; max-age=3600; SameSite=Lax`
-            console.log('✅ Auth cookie set')
+            console.log('✅ Login successful!')
           } else {
             // Not an admin user
+            console.log('❌ User is not an admin')
             await auth.signOut()
             setUser(null)
-            // Clear auth cookie
             document.cookie = 'firebase-auth-token=; path=/; max-age=0'
           }
-        } catch (error) {
-          console.error('Error fetching admin data:', error)
+        } catch (error: any) {
+          console.error('❌ Error fetching admin data:', error)
+          console.error('Error code:', error.code)
+          console.error('Error message:', error.message)
           setUser(null)
-          // Clear auth cookie
           document.cookie = 'firebase-auth-token=; path=/; max-age=0'
         }
       } else {

@@ -23,7 +23,10 @@ import {
   TrendingUp,
   Plus,
   Edit as EditIcon,
-  UserPlus
+  UserPlus,
+  Key,
+  AlertCircle,
+  CheckCircle
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -125,6 +128,12 @@ export default function BarberDetailPage() {
     phone: '',
     password: ''
   })
+
+  // Password reset state
+  const [showPasswordResetModal, setShowPasswordResetModal] = useState(false)
+  const [newBarberPassword, setNewBarberPassword] = useState('')
+  const [resettingPassword, setResettingPassword] = useState(false)
+  const [resetMessage, setResetMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
 
   const canEdit = hasPermission('barbers:write') || hasPermission('*')
   const canDelete = hasPermission('barbers:delete') || hasPermission('*')
@@ -439,12 +448,27 @@ export default function BarberDetailPage() {
           phone: employeeForm.phone.trim(),
         }
 
-        // Only update password if changed
+        // Update basic info
+        await updateDoc(doc(db, 'employees', editingEmployee.id), employeeData)
+
+        // Update password separately if changed
         if (employeeForm.password.trim() && employeeForm.password !== editingEmployee.password) {
-          employeeData.password = employeeForm.password.trim()
+          const passwordResponse = await fetch('/api/admin/reset-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: editingEmployee.id,
+              userType: 'employee',
+              newPassword: employeeForm.password.trim(),
+            }),
+          })
+
+          const passwordData = await passwordResponse.json()
+          if (!passwordData.success) {
+            console.error('Password update failed:', passwordData.error)
+          }
         }
 
-        await updateDoc(doc(db, 'employees', editingEmployee.id), employeeData)
         alert('Çalışan güncellendi!')
       } else {
         // Add new employee
@@ -511,6 +535,53 @@ export default function BarberDetailPage() {
     }
   }
 
+  const handleResetBarberPassword = async () => {
+    if (!canEdit) {
+      alert('Bu işlem için yetkiniz yok!')
+      return
+    }
+
+    if (!newBarberPassword || newBarberPassword.length < 6) {
+      setResetMessage({ type: 'error', text: 'Şifre en az 6 karakter olmalıdır' })
+      return
+    }
+
+    setResettingPassword(true)
+    setResetMessage(null)
+
+    try {
+      const response = await fetch('/api/admin/reset-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userId: barberId,
+          userType: 'barber',
+          newPassword: newBarberPassword,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        setResetMessage({ type: 'success', text: 'Berberin şifresi başarıyla güncellendi!' })
+        setNewBarberPassword('')
+        setTimeout(() => {
+          setShowPasswordResetModal(false)
+          setResetMessage(null)
+        }, 2000)
+      } else {
+        setResetMessage({ type: 'error', text: data.error || 'Şifre güncellenirken hata oluştu' })
+      }
+    } catch (error) {
+      console.error('Error resetting barber password:', error)
+      setResetMessage({ type: 'error', text: 'Bir hata oluştu' })
+    } finally {
+      setResettingPassword(false)
+    }
+  }
+
   if (loading) {
     return (
       <DashboardLayout>
@@ -561,6 +632,17 @@ export default function BarberDetailPage() {
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Password Reset Button */}
+            {canEdit && !editing && (
+              <button
+                onClick={() => setShowPasswordResetModal(true)}
+                className="px-4 py-2 bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded-[var(--radius)] font-medium transition-colors flex items-center space-x-2"
+              >
+                <Key className="w-4 h-4" />
+                <span>Şifre Sıfırla</span>
+              </button>
+            )}
+
             {/* Active/Inactive Toggle */}
             {canEdit && (
               <button
@@ -1190,6 +1272,101 @@ export default function BarberDetailPage() {
                 >
                   <Save className="w-4 h-4" />
                   <span>{saving ? 'Kaydediliyor...' : editingEmployee ? 'Güncelle' : 'Kaydet'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Barber Password Reset Modal */}
+        {showPasswordResetModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-card border border-border rounded-[var(--radius)] max-w-md w-full">
+              <div className="p-6 border-b border-border">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-semibold text-card-foreground flex items-center space-x-2">
+                    <Key className="w-5 h-5" />
+                    <span>Berber Şifresi Sıfırla</span>
+                  </h3>
+                  <button
+                    onClick={() => {
+                      setShowPasswordResetModal(false)
+                      setNewBarberPassword('')
+                      setResetMessage(null)
+                    }}
+                    className="p-2 hover:bg-accent rounded-[var(--radius)] transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                {resetMessage && (
+                  <div className={`p-4 rounded-[var(--radius)] flex items-center space-x-2 ${
+                    resetMessage.type === 'success' 
+                      ? 'bg-green-50 text-green-800 border border-green-200' 
+                      : 'bg-red-50 text-red-800 border border-red-200'
+                  }`}>
+                    {resetMessage.type === 'success' ? (
+                      <CheckCircle className="w-5 h-5" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5" />
+                    )}
+                    <span className="text-sm">{resetMessage.text}</span>
+                  </div>
+                )}
+
+                <div className="bg-blue-50 border border-blue-200 rounded-[var(--radius)] p-4">
+                  <p className="text-sm text-blue-800">
+                    <strong>Berber:</strong> {barber.name}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-muted-foreground mb-2">
+                    Yeni Şifre <span className="text-destructive">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newBarberPassword}
+                    onChange={(e) => setNewBarberPassword(e.target.value)}
+                    placeholder="En az 6 karakter"
+                    className="w-full px-4 py-3 border border-border rounded-[var(--radius)] bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                    disabled={resettingPassword}
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Şifre Firebase Authentication ve Firestore'da güncellenecektir
+                  </p>
+                </div>
+
+                <div className="bg-yellow-50 border border-yellow-200 rounded-[var(--radius)] p-4">
+                  <p className="text-sm text-yellow-800">
+                    <strong>Uyarı:</strong> Bu işlem berberin mevcut şifresini değiştirecektir. 
+                    Yeni şifreyi berbere iletmeyi unutmayın.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-border flex items-center justify-end space-x-3">
+                <button
+                  onClick={() => {
+                    setShowPasswordResetModal(false)
+                    setNewBarberPassword('')
+                    setResetMessage(null)
+                  }}
+                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-[var(--radius)] hover:bg-gray-300 transition-colors"
+                  disabled={resettingPassword}
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={handleResetBarberPassword}
+                  disabled={resettingPassword}
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-[var(--radius)] hover:opacity-90 transition-opacity flex items-center space-x-2 disabled:opacity-50"
+                >
+                  <Key className="w-4 h-4" />
+                  <span>{resettingPassword ? 'Güncelleniyor...' : 'Şifreyi Güncelle'}</span>
                 </button>
               </div>
             </div>

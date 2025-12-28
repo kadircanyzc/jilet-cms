@@ -6,8 +6,7 @@ import { ViewsChart, ContentDistributionChart } from '@/components/Charts'
 import DataTable from '@/components/DataTable'
 import { Eye, FileText, Users, TrendingUp } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { db } from '@/lib/firebase'
-import { collection, getDocs, query, where } from 'firebase/firestore'
+import { auth } from '@/lib/firebase'
 
 interface DashboardStats {
   totalBarbers: number
@@ -38,100 +37,34 @@ export default function Home() {
       try {
         console.log('📊 Starting to fetch dashboard stats...')
 
-        const now = new Date()
-        const thirtyDaysAgo = new Date()
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+        const user = auth.currentUser;
+        if (!user) {
+          console.error('No authenticated user');
+          window.location.href = '/login';
+          return;
+        }
 
-        const sixtyDaysAgo = new Date()
-        sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60)
+        const token = await user.getIdToken();
+        const response = await fetch('/api/dashboard/stats', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
 
-        // Toplam Berberler
-        console.log('👨‍💼 Fetching barbers...')
-        const barbersSnapshot = await getDocs(collection(db, 'barbers'))
-        const totalBarbers = barbersSnapshot.size
-        console.log('✅ Barbers fetched:', totalBarbers)
+        if (!response.ok) {
+          const errorData = await response.json();
+          if (response.status === 401 || response.status === 403) {
+            console.error('Auth error, redirecting to login');
+            window.location.href = '/login';
+            return;
+          }
+          throw new Error(errorData.error || 'Failed to fetch dashboard stats');
+        }
 
-        // Son 30 gün içinde eklenen berberler
-        const recentBarbers = barbersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        }).length
-
-        // Önceki 30 gün (30-60 gün arası)
-        const previousBarbers = barbersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= sixtyDaysAgo && createdAt < thirtyDaysAgo
-        }).length
-
-        const barbersChange = previousBarbers > 0
-          ? ((recentBarbers - previousBarbers) / previousBarbers) * 100
-          : recentBarbers > 0 ? 100 : 0
-
-        // Toplam Kullanıcılar
-        const usersSnapshot = await getDocs(collection(db, 'users'))
-        const totalUsers = usersSnapshot.size
-
-        const recentUsers = usersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        }).length
-
-        const previousUsers = usersSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= sixtyDaysAgo && createdAt < thirtyDaysAgo
-        }).length
-
-        const usersChange = previousUsers > 0
-          ? ((recentUsers - previousUsers) / previousUsers) * 100
-          : recentUsers > 0 ? 100 : 0
-
-        // Toplam Randevular
-        const appointmentsSnapshot = await getDocs(collection(db, 'appointments'))
-        const totalAppointments = appointmentsSnapshot.size
-
-        const recentAppointments = appointmentsSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= thirtyDaysAgo
-        })
-
-        const previousAppointments = appointmentsSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          const createdAt = data.createdAt?.toDate()
-          return createdAt && createdAt >= sixtyDaysAgo && createdAt < thirtyDaysAgo
-        })
-
-        const appointmentsChange = previousAppointments.length > 0
-          ? ((recentAppointments.length - previousAppointments.length) / previousAppointments.length) * 100
-          : recentAppointments.length > 0 ? 100 : 0
-
-        // Aktif Kullanıcılar (son 30 gün içinde randevu alanlar)
-        const activeUserIds = new Set(recentAppointments.map(doc => doc.data().userId))
-        const activeUsers = activeUserIds.size
-
-        // Önceki 30 gün aktif kullanıcılar
-        const previousActiveUserIds = new Set(previousAppointments.map(doc => doc.data().userId))
-        const previousActiveUsers = previousActiveUserIds.size
-
-        const activeUsersChange = previousActiveUsers > 0
-          ? ((activeUsers - previousActiveUsers) / previousActiveUsers) * 100
-          : activeUsers > 0 ? 100 : 0
-
-        setStats({
-          totalBarbers,
-          totalUsers,
-          totalAppointments,
-          activeUsers,
-          barbersChange: Math.round(barbersChange * 10) / 10,
-          usersChange: Math.round(usersChange * 10) / 10,
-          appointmentsChange: Math.round(appointmentsChange * 10) / 10,
-          activeUsersChange: Math.round(activeUsersChange * 10) / 10,
-        })
-      } catch (error) {
+        const data = await response.json();
+        setStats(data.stats);
+        console.log('✅ Dashboard stats loaded successfully');
+      } catch (error: any) {
         console.error('Error fetching stats:', error)
       } finally {
         setLoading(false)

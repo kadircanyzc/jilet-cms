@@ -5,9 +5,8 @@ import { useRouter } from 'next/navigation'
 import DashboardLayout from '@/components/DashboardLayout'
 import { ArrowLeft, Save, Loader2 } from 'lucide-react'
 import Link from 'next/link'
-import { db, auth } from '@/lib/firebase'
-import { doc, setDoc, collection, query, where, getDocs } from 'firebase/firestore'
-import { createUserWithEmailAndPassword } from 'firebase/auth'
+import { db } from '@/lib/firebase'
+import { doc, setDoc, collection } from 'firebase/firestore'
 
 interface BarberFormData {
   shopName: string
@@ -124,78 +123,22 @@ export default function AddBarberPage() {
     setLoading(true)
 
     try {
-      // Check if username already exists
-      const usernameQuery = query(
-        collection(db, 'barbers'),
-        where('username', '==', formData.username.toLowerCase())
-      )
-      const usernameSnapshot = await getDocs(usernameQuery)
-
-      if (!usernameSnapshot.empty) {
-        setError('Bu kullanıcı adı zaten kullanılıyor!')
-        setLoading(false)
-        return
-      }
-
-      // Create Firebase Auth user
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        formData.email,
-        formData.password
-      )
-      const userId = userCredential.user.uid
-
-      // Create barber document
-      const barberData: any = {
-        shopName: formData.shopName,
-        name: formData.shopName,
-        ownerName: formData.ownerName,
-        username: formData.username.toLowerCase(),
-        email: formData.email,
-        phone: formData.phone,
-        address: formData.address,
-        city: formData.city,
-        district: formData.district,
-        role: 'barber',
-        description: formData.description || '',
-        services: [],
-        employees: [],
-        slots: {},
-        closedDays: [],
-        workingHours: {
-          startTime: formData.startTime,
-          endTime: formData.endTime
+      // Call API endpoint to create barber (uses Admin SDK)
+      const response = await fetch('/api/admin/create-barber', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        isActive: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        createdBy: 'admin',
+        body: JSON.stringify({ formData }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setError(data.error || 'Berber oluşturulurken bir hata oluştu');
+        setLoading(false);
+        return;
       }
-
-      // Add coordinates if available
-      if (formData.latitude && formData.longitude) {
-        barberData.coordinates = {
-          latitude: parseFloat(formData.latitude),
-          longitude: parseFloat(formData.longitude)
-        }
-      }
-
-      await setDoc(doc(db, 'barbers', userId), barberData)
-
-      // Log the action
-      await setDoc(doc(collection(db, 'logs')), {
-        action: 'barber_created',
-        targetType: 'barber',
-        targetId: userId,
-        targetName: formData.shopName,
-        performedBy: 'admin',
-        performedAt: new Date(),
-        details: {
-          shopName: formData.shopName,
-          ownerName: formData.ownerName,
-          city: formData.city,
-        }
-      })
 
       alert('Berber başarıyla kaydedildi!')
       router.push('/barbers')

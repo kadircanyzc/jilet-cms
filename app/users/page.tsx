@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
-import { db } from '@/lib/firebase'
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, query, where } from 'firebase/firestore'
+import { auth } from '@/lib/firebase'
 import { Users, Search, Ban, Trash2, CheckCircle, XCircle, Calendar, Eye } from 'lucide-react'
 
 interface User {
@@ -13,7 +12,7 @@ interface User {
   phone?: string
   role: string
   isBlocked?: boolean
-  createdAt: any
+  createdAt: string | null
   totalAppointments?: number
 }
 
@@ -34,45 +33,38 @@ export default function UsersPage() {
 
   const fetchUsers = async () => {
     try {
-      const usersSnapshot = await getDocs(collection(db, 'users'))
-      const appointmentsSnapshot = await getDocs(collection(db, 'appointments'))
+      const user = auth.currentUser;
+      if (!user) {
+        console.error('No authenticated user');
+        window.location.href = '/login?redirect=/users';
+        return;
+      }
 
-      // Count appointments per user
-      const appointmentCounts = new Map<string, number>()
-      appointmentsSnapshot.docs.forEach(doc => {
-        const userId = doc.data().userId
-        if (userId) {
-          appointmentCounts.set(userId, (appointmentCounts.get(userId) || 0) + 1)
+      const token = await user.getIdToken();
+      const response = await fetch('/api/users', {
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-      })
+      });
 
-      const usersData: User[] = usersSnapshot.docs.map(doc => {
-        const data = doc.data()
-        return {
-          id: doc.id,
-          name: data.name || 'İsimsiz Kullanıcı',
-          email: data.email || 'Belirtilmemiş',
-          phone: data.phone || data.phoneNumber,
-          role: data.role || 'user',
-          isBlocked: data.isBlocked || false,
-          createdAt: data.createdAt,
-          totalAppointments: appointmentCounts.get(doc.id) || 0,
+      if (!response.ok) {
+        const errorData = await response.json();
+        if (response.status === 401 || response.status === 403) {
+          alert('Oturum süreniz dolmuş veya yetkiniz yok. Lütfen tekrar giriş yapın.');
+          window.location.href = '/login?redirect=/users';
+          return;
         }
-      })
+        throw new Error(errorData.error || 'Failed to fetch users');
+      }
 
-      // Sort by creation date (newest first)
-      usersData.sort((a, b) => {
-        const dateA = a.createdAt?.toDate?.() || new Date(0)
-        const dateB = b.createdAt?.toDate?.() || new Date(0)
-        return dateB.getTime() - dateA.getTime()
-      })
-
-      setUsers(usersData)
-      setFilteredUsers(usersData)
-    } catch (error) {
-      console.error('Error fetching users:', error)
+      const data = await response.json();
+      setUsers(data.users);
+      setFilteredUsers(data.users);
+    } catch (error: any) {
+      console.error('Error fetching users:', error);
+      alert('Kullanıcılar yüklenirken hata oluştu: ' + (error.message || 'Bilinmeyen hata'));
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
@@ -105,20 +97,29 @@ export default function UsersPage() {
     }
 
     try {
-      await updateDoc(doc(db, 'users', userId), {
-        isBlocked: !currentStatus,
-        updatedAt: new Date(),
-      })
+      const user = auth.currentUser;
+      if (!user) {
+        alert('Lütfen giriş yapın');
+        return;
+      }
 
-      // Log the action
-      await setDoc(doc(collection(db, 'logs')), {
-        action: currentStatus ? 'user_unblocked' : 'user_blocked',
-        targetType: 'user',
-        targetId: userId,
-        targetName: userName,
-        performedBy: 'admin',
-        performedAt: new Date(),
-      })
+      const token = await user.getIdToken();
+      const response = await fetch('/api/users', {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId,
+          userName,
+          isBlocked: !currentStatus
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update user');
+      }
 
       // Update local state
       setUsers(prevUsers =>
@@ -146,27 +147,23 @@ export default function UsersPage() {
     }
 
     try {
-      // Delete user's appointments first
-      const appointmentsQuery = query(
-        collection(db, 'appointments'),
-        where('userId', '==', userId)
-      )
-      const appointmentsSnapshot = await getDocs(appointmentsQuery)
-      const deletePromises = appointmentsSnapshot.docs.map(doc => deleteDoc(doc.ref))
-      await Promise.all(deletePromises)
+      const user = auth.currentUser;
+      if (!user) {
+        alert('Lütfen giriş yapın');
+        return;
+      }
 
-      // Delete user document
-      await deleteDoc(doc(db, 'users', userId))
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/users?userId=${userId}&userName=${encodeURIComponent(userName)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
 
-      // Log the action
-      await setDoc(doc(collection(db, 'logs')), {
-        action: 'user_deleted',
-        targetType: 'user',
-        targetId: userId,
-        targetName: userName,
-        performedBy: 'admin',
-        performedAt: new Date(),
-      })
+      if (!response.ok) {
+        throw new Error('Failed to delete user');
+      }
 
       // Update local state
       setUsers(prevUsers => prevUsers.filter(user => user.id !== userId))
@@ -330,7 +327,7 @@ export default function UsersPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-muted-foreground">
-                          {user.createdAt?.toDate?.().toLocaleDateString('tr-TR') || 'Bilinmiyor'}
+                          {user.createdAt ? new Date(user.createdAt).toLocaleDateString('tr-TR') : 'Bilinmiyor'}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right">

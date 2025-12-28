@@ -3,13 +3,12 @@ import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDvHXqfYhep4VnaoitI-I72mjG8iuhusi0",
+  apiKey: "AIzaSyBe9lIWl1vyS7i1RVdv5NXFKlCbmoX6WhM",
   authDomain: "kestir-demo-1.firebaseapp.com",
   projectId: "kestir-demo-1",
   storageBucket: "kestir-demo-1.firebasestorage.app",
   messagingSenderId: "78222840817",
-  appId: "1:78222840817:web:PLACEHOLDER",
-  measurementId: "G-PLACEHOLDER"
+  appId: "1:78222840817:web:ffd01654572d7e5482ea50"
 };
 
 // Initialize Firebase only if not already initialized
