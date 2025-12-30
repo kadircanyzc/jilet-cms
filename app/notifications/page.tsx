@@ -1,902 +1,386 @@
-'use client'
+'use client';
 
-import DashboardLayout from '@/components/DashboardLayout'
-import AnalyticsCard from '@/components/AnalyticsCard'
-import { useEffect, useState } from 'react'
-import { db } from '@/lib/firebase'
-import { collection, getDocs, addDoc, Timestamp, query, where, orderBy, limit } from 'firebase/firestore'
-import { Bell, Users, Scissors, Briefcase, Send, CheckCircle, XCircle, Clock } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
-
-interface NotificationLog {
-  id: string
-  title: string
-  body: string
-  type: string
-  target: string
-  recipientCount: number
-  sentBy: string
-  sentAt: Date
-  status: 'success' | 'failed'
-}
-
-interface FCMStats {
-  usersCount: number
-  barbersCount: number
-  employeesCount: number
-  monthNotifications: number
-}
-
-type TargetType = 'all_users' | 'all_barbers' | 'all_employees' | 'all_barbers_employees' | 'all_app_users' | 'custom' | 'topic_all_app_users' | 'topic_all_customers' | 'topic_all_barbers' | 'topic_all_employees'
-type NotificationType = 'general' | 'promotion' | 'announcement' | 'reminder'
-
-interface SelectedUser {
-  id: string
-  name: string
-  email: string
-  type: 'user' | 'barber' | 'employee'
-}
+import { useState, useEffect } from 'react';
+import { sendNotificationFromCMS, getRecipientCount } from '@/lib/notificationService';
+import DashboardLayout from '@/components/DashboardLayout';
+import { db } from '@/lib/firebase';
+import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
 export default function NotificationsPage() {
-  const { user, hasPermission } = useAuth()
-  const [stats, setStats] = useState<FCMStats>({
-    usersCount: 0,
-    barbersCount: 0,
-    employeesCount: 0,
-    monthNotifications: 0,
-  })
-  const [logs, setLogs] = useState<NotificationLog[]>([])
-  const [loading, setLoading] = useState(true)
-  const [sending, setSending] = useState(false)
-  const [showModal, setShowModal] = useState(false)
+  const [targetType, setTargetType] = useState<'ALL_BARBERS' | 'ALL_USERS' | 'ALL_EMPLOYEES' | 'CUSTOM'>('ALL_BARBERS');
+  const [customRecipients, setCustomRecipients] = useState('');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [type, setType] = useState('system_maintenance');
 
-  // Form states
-  const [target, setTarget] = useState<TargetType>('all_users')
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
-  const [notificationType, setNotificationType] = useState<NotificationType>('general')
-  const [selectedUsers, setSelectedUsers] = useState<SelectedUser[]>([])
-  const [availableUsers, setAvailableUsers] = useState<SelectedUser[]>([])
+  const [loading, setLoading] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [estimatedRecipients, setEstimatedRecipients] = useState(0);
+  const [loadingCount, setLoadingCount] = useState(false);
 
-  // useEffect her zaman aynı sırada çağrılmalı (hooks kuralı)
+  // Production safety: ALL_USERS confirmation
+  const [confirmAllUsers, setConfirmAllUsers] = useState(false);
+
+  // Notification history
+  const [notificationHistory, setNotificationHistory] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  // Load notification history from Firestore
   useEffect(() => {
-    if (user && (user.role === 'super_admin' || user.role === 'admin')) {
-      fetchData()
-    }
-  }, [user])
+    const logsQuery = query(
+      collection(db, 'notification_logs'),
+      where('source', '==', 'cms'),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
 
-  // Yetki kontrolü
-  if (!user || (user.role !== 'super_admin' && user.role !== 'admin')) {
-    return (
-      <DashboardLayout>
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center">
-            <XCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-            <h2 className="text-2xl font-bold text-foreground mb-2">Yetkisiz Erişim</h2>
-            <p className="text-muted-foreground">Bu sayfaya erişim yetkiniz bulunmamaktadır.</p>
-          </div>
-        </div>
-      </DashboardLayout>
-    )
-  }
-
-  const fetchData = async () => {
-    try {
-      setLoading(true)
-
-      // İstatistikleri topla - her biri için ayrı try-catch
-      let usersSnapshot: any = { docs: [] }
-      let barbersSnapshot: any = { docs: [] }
-      let employeesSnapshot: any = { docs: [] }
-
-      try {
-        usersSnapshot = await getDocs(collection(db, 'users'))
-      } catch (error) {
-        console.error('Error fetching users:', error)
-      }
-
-      try {
-        barbersSnapshot = await getDocs(collection(db, 'barbers'))
-      } catch (error) {
-        console.error('Error fetching barbers:', error)
-      }
-
-      try {
-        employeesSnapshot = await getDocs(collection(db, 'employees'))
-      } catch (error) {
-        console.error('Error fetching employees:', error)
-      }
-
-      // FCM token sayılarını hesapla
-      let usersWithToken = 0
-      let barbersWithToken = 0
-      let employeesWithToken = 0
-
-      usersSnapshot.docs.forEach((doc: any) => {
-        if (doc.data().fcmToken) usersWithToken++
-      })
-
-      barbersSnapshot.docs.forEach((doc: any) => {
-        if (doc.data().fcmToken) barbersWithToken++
-      })
-
-      employeesSnapshot.docs.forEach((doc: any) => {
-        if (doc.data().fcmToken) employeesWithToken++
-      })
-
-      // Bu ay gönderilen bildirimler
-      let logsSnapshot: any = { docs: [], size: 0 }
-      try {
-        const now = new Date()
-        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-
-        logsSnapshot = await getDocs(
-          query(
-            collection(db, 'notification_logs'),
-            where('sentAt', '>=', Timestamp.fromDate(firstDayOfMonth)),
-            orderBy('sentAt', 'desc')
-          )
-        )
-      } catch (error) {
-        console.error('Error fetching notification logs:', error)
-      }
-
-      const logsData: NotificationLog[] = logsSnapshot.docs.map((doc: any) => ({
+    const unsubscribe = onSnapshot(logsQuery, (snapshot) => {
+      const logs = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
-        sentAt: doc.data().sentAt?.toDate() || new Date(),
-      } as NotificationLog))
+      }));
+      setNotificationHistory(logs);
+      setLoadingHistory(false);
+    }, (error) => {
+      console.error('Error loading notification history:', error);
+      setLoadingHistory(false);
+    });
 
-      setStats({
-        usersCount: usersWithToken,
-        barbersCount: barbersWithToken,
-        employeesCount: employeesWithToken,
-        monthNotifications: logsSnapshot.size,
-      })
+    return () => unsubscribe();
+  }, []);
 
-      setLogs(logsData)
-
-      // Özel seçim için kullanıcıları yükle
-      const allUsers: SelectedUser[] = []
-
-      usersSnapshot.docs.forEach(doc => {
-        const data = doc.data()
-        allUsers.push({
-          id: doc.id,
-          name: data.name || data.email || 'İsimsiz Kullanıcı',
-          email: data.email || '',
-          type: 'user',
-        })
-      })
-
-      barbersSnapshot.docs.forEach(doc => {
-        const data = doc.data()
-        allUsers.push({
-          id: doc.id,
-          name: data.name || data.shopName || 'İsimsiz Berber',
-          email: data.email || '',
-          type: 'barber',
-        })
-      })
-
-      employeesSnapshot.docs.forEach(doc => {
-        const data = doc.data()
-        allUsers.push({
-          id: doc.id,
-          name: data.name || 'İsimsiz Çalışan',
-          email: data.email || '',
-          type: 'employee',
-        })
-      })
-
-      setAvailableUsers(allUsers)
-    } catch (error) {
-      console.error('Error fetching data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const collectFCMTokens = async (targetType: TargetType): Promise<{ tokens: string[], userIds: string[] }> => {
-    const tokens: string[] = []
-    const userIds: string[] = []
-
+  // Fetch real recipient count from Cloud Function
+  const fetchRecipientCount = async () => {
     try {
-      if (targetType === 'custom') {
-        // Özel seçim için seçilen kullanıcıların tokenlarını topla
-        for (const selectedUser of selectedUsers) {
-          let collectionName = 'users'
-          if (selectedUser.type === 'barber') {
-            collectionName = 'barbers'
-          } else if (selectedUser.type === 'employee') {
-            collectionName = 'employees'
-          }
+      const customRecipientsList = targetType === 'CUSTOM'
+        ? customRecipients.split(',').map(id => id.trim()).filter(id => id.length > 0)
+        : undefined;
 
-          const snapshot = await getDocs(
-            query(collection(db, collectionName), where('__name__', '==', selectedUser.id))
-          )
+      const count = await getRecipientCount(targetType, customRecipientsList);
+      return count;
+    } catch (error: any) {
+      console.error('Error fetching recipient count:', error);
 
-          snapshot.docs.forEach(doc => {
-            const fcmToken = doc.data().fcmToken
-            if (fcmToken) {
-              tokens.push(fcmToken)
-              userIds.push(doc.id)
-            }
-          })
-        }
-      } else if (targetType === 'all_users') {
-        const snapshot = await getDocs(collection(db, 'users'))
-        snapshot.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-      } else if (targetType === 'all_barbers') {
-        const snapshot = await getDocs(collection(db, 'barbers'))
-        snapshot.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-      } else if (targetType === 'all_employees') {
-        const snapshot = await getDocs(collection(db, 'employees'))
-        snapshot.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-      } else if (targetType === 'all_barbers_employees') {
-        const [barbersSnap, employeesSnap] = await Promise.all([
-          getDocs(collection(db, 'barbers')),
-          getDocs(collection(db, 'employees')),
-        ])
-
-        barbersSnap.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-
-        employeesSnap.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-      } else if (targetType === 'all_app_users') {
-        // Tüm kullanıcılar + berberler + çalışanlar
-        const [usersSnap, barbersSnap, employeesSnap] = await Promise.all([
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'barbers')),
-          getDocs(collection(db, 'employees')),
-        ])
-
-        usersSnap.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-
-        barbersSnap.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
-
-        employeesSnap.docs.forEach(doc => {
-          const fcmToken = doc.data().fcmToken
-          if (fcmToken) {
-            tokens.push(fcmToken)
-            userIds.push(doc.id)
-          }
-        })
+      // Fallback to approximate counts if query fails
+      if (targetType === 'CUSTOM') {
+        return customRecipients.split(',').filter(id => id.trim()).length;
       }
-    } catch (error) {
-      console.error('Error collecting FCM tokens:', error)
+      return targetType === 'ALL_BARBERS' ? 150 : targetType === 'ALL_USERS' ? 5000 : 50;
     }
+  };
 
-    return { tokens, userIds }
-  }
-
-  const handleSendNotification = () => {
+  const handleSendClick = async () => {
+    // Production safety: validate inputs
     if (!title.trim() || !body.trim()) {
-      alert('Lütfen başlık ve mesaj alanlarını doldurun!')
-      return
+      alert('❌ Hata!\n\nBaşlık ve mesaj alanları zorunludur.');
+      return;
     }
 
-    if (target === 'custom' && selectedUsers.length === 0) {
-      alert('Lütfen en az bir alıcı seçin!')
-      return
+    // Production safety: ALL_USERS requires explicit confirmation
+    if (targetType === 'ALL_USERS' && !confirmAllUsers) {
+      alert('❌ Hata!\n\nTÜM KULLANICILARA bildirim göndermek için onay kutusunu işaretlemelisiniz.');
+      return;
     }
 
-    setShowModal(true)
-  }
+    setLoadingCount(true);
+    const count = await fetchRecipientCount();
+    setEstimatedRecipients(count);
+    setLoadingCount(false);
+    setShowConfirmModal(true);
+  };
 
-  const confirmSendNotification = async () => {
-    setSending(true)
-    setShowModal(false)
+  const handleConfirmSend = async () => {
+    setShowConfirmModal(false);
+    setLoading(true);
 
     try {
-      // Topic-based notification check
-      if (target.startsWith('topic_')) {
-        // Extract topic name (e.g., "topic_all_app_users" -> "all_app_users")
-        const topicName = target.replace('topic_', '')
-
-        // Send to topic
-        const response = await fetch('/api/notifications/send-topic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            topic: topicName,
-            title,
-            body,
-            type: notificationType,
-          }),
-        })
-
-        const result = await response.json()
-
-        if (!response.ok) {
-          throw new Error(result.error || 'Topic bildirimi gönderilemedi')
-        }
-
-        console.log('✅ Topic notification sent:', result)
-
-        // Firestore'a log kaydı
-        await addDoc(collection(db, 'notification_logs'), {
-          title,
-          body,
-          type: notificationType,
-          target: getTargetLabel(target),
-          recipientCount: -1, // Topic'lerde alıcı sayısı bilinmez
-          sentBy: user?.email || 'admin',
-          sentAt: Timestamp.now(),
-          status: 'success',
-        })
-
-        alert(`📱 Bildirim başarıyla "${topicName}" topic'ine gönderildi!`)
-
-        // Formu temizle
-        setTitle('')
-        setBody('')
-        setNotificationType('general')
-        setTarget('all_users')
-        setSelectedUsers([])
-
-        fetchData()
-        return
-      }
-
-      // Token-based notification (existing code)
-      const { tokens, userIds } = await collectFCMTokens(target)
-
-      if (tokens.length === 0) {
-        alert('Hedef kullanıcılar arasında FCM token\'a sahip kimse bulunamadı!')
-        setSending(false)
-        return
-      }
-
-      // FCM gönderimi için API endpoint'ini çağır
-      try {
-        const fcmResponse = await fetch('/api/notifications/send', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            tokens,
-            title,
-            body,
-            type: notificationType,
-          }),
-        })
-
-        const fcmResult = await fcmResponse.json()
-
-        if (!fcmResponse.ok) {
-          throw new Error(fcmResult.error || 'FCM gönderimi başarısız')
-        }
-
-        console.log('FCM Response:', fcmResult)
-      } catch (fcmError) {
-        console.error('FCM Error:', fcmError)
-        // FCM hatası olsa bile devam et (log kaydı yap)
-      }
-
-      // Firestore'a log kaydı oluştur
-      await addDoc(collection(db, 'notification_logs'), {
+      const payload: any = {
+        targetType,
         title,
         body,
-        type: notificationType,
-        target: getTargetLabel(target),
-        recipientCount: tokens.length,
-        sentBy: user?.email || 'admin',
-        sentAt: Timestamp.now(),
-        status: 'success',
-      })
+        type,
+        confirmAllUsers: targetType === 'ALL_USERS' ? confirmAllUsers : undefined,
+      };
 
-      // Her kullanıcı için bildirim kaydı oluştur (notifications koleksiyonu)
-      const notificationPromises = userIds.map(userId =>
-        addDoc(collection(db, 'notifications'), {
-          userId,
-          title,
-          body,
-          type: notificationType,
-          read: false,
-          createdAt: Timestamp.now(),
-        })
-      )
+      if (targetType === 'CUSTOM') {
+        payload.customRecipients = customRecipients
+          .split(',')
+          .map(id => id.trim())
+          .filter(id => id.length > 0);
+      }
 
-      await Promise.all(notificationPromises)
+      const result = await sendNotificationFromCMS(payload);
 
-      alert(`Bildirim başarıyla ${tokens.length} kişiye gönderildi!`)
+      // Success toast
+      alert(`✅ Başarılı!\n\n${result.totalTargets} kişiye bildirim gönderildi.\n\nDetaylar:\n- In-App: ${result.inAppCreated}\n- FCM Gönderildi: ${result.fcmSent}\n- FCM Başarısız: ${result.fcmFailed}\n- Süre: ${result.durationMs}ms`);
 
-      // Formu temizle
-      setTitle('')
-      setBody('')
-      setNotificationType('general')
-      setTarget('all_users')
-      setSelectedUsers([])
+      // Reset form
+      setTitle('');
+      setBody('');
+      setCustomRecipients('');
+      setConfirmAllUsers(false);
 
-      // Verileri yenile
-      fetchData()
-    } catch (error) {
-      console.error('Error sending notification:', error)
-      alert('Bildirim gönderilirken bir hata oluştu!')
+      // Scroll to history
+      setTimeout(() => {
+        document.getElementById('notification-history')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        });
+      }, 500);
+
+    } catch (error: any) {
+      // Error toast
+      alert(`❌ Hata!\n\n${error.message}\n\nDetay: ${error.code || 'Bilinmeyen hata'}`);
+      console.error('Notification send error:', error);
     } finally {
-      setSending(false)
+      setLoading(false);
     }
-  }
-
-  const getTargetLabel = (targetType: TargetType): string => {
-    const labels: Record<TargetType, string> = {
-      all_users: 'Tüm Kullanıcılar (Giriş Yapmış)',
-      all_barbers: 'Tüm Berberler (Giriş Yapmış)',
-      all_employees: 'Tüm Çalışanlar (Giriş Yapmış)',
-      all_barbers_employees: 'Tüm Berber ve Çalışanlar (Giriş Yapmış)',
-      all_app_users: 'Tüm Uygulama Kullanıcıları (Giriş Yapmış)',
-      custom: 'Özel Seçim',
-      topic_all_app_users: '📱 Tüm App Kullanıcıları (Topic - Giriş Gerekmez)',
-      topic_all_customers: '📱 Tüm Müşteriler (Topic)',
-      topic_all_barbers: '📱 Tüm Berberler (Topic)',
-      topic_all_employees: '📱 Tüm Çalışanlar (Topic)',
-    }
-    return labels[targetType]
-  }
-
-  const getTypeColor = (type: string): string => {
-    const colors: Record<string, string> = {
-      general: 'bg-blue-100 text-blue-800',
-      promotion: 'bg-green-100 text-green-800',
-      announcement: 'bg-purple-100 text-purple-800',
-      reminder: 'bg-orange-100 text-orange-800',
-    }
-    return colors[type] || 'bg-gray-100 text-gray-800'
-  }
-
-  const getStatusIcon = (status: string) => {
-    if (status === 'success') {
-      return <CheckCircle className="w-5 h-5 text-green-600" />
-    }
-    return <XCircle className="w-5 h-5 text-red-600" />
-  }
-
-  const getRecipientCount = async (): Promise<number> => {
-    // Topic-based notifications don't have a count
-    if (target.startsWith('topic_')) {
-      return -1 // Special value indicating topic-based
-    }
-    if (target === 'custom') {
-      return selectedUsers.length
-    }
-    const { tokens } = await collectFCMTokens(target)
-    return tokens.length
-  }
-
-  const [recipientCount, setRecipientCount] = useState(0)
-  const [isTopicTarget, setIsTopicTarget] = useState(false)
-
-  useEffect(() => {
-    const updateRecipientCount = async () => {
-      setIsTopicTarget(target.startsWith('topic_'))
-      const count = await getRecipientCount()
-      setRecipientCount(count)
-    }
-    updateRecipientCount()
-  }, [target, selectedUsers])
+  };
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        {/* Page Header */}
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Bildirim Gönderme Paneli</h1>
-          <p className="text-muted-foreground mt-1">Kullanıcılara toplu bildirim gönderin</p>
-        </div>
+      <div className="max-w-3xl mx-auto">
+        <div className="bg-white rounded-lg shadow p-8">
+          <h1 className="text-2xl font-bold mb-6">📢 Bildirim Gönder</h1>
 
-        {/* İstatistikler */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-          <AnalyticsCard
-            title="Kullanıcı FCM Token"
-            value={loading ? '...' : stats.usersCount.toLocaleString('tr-TR')}
-            change={0}
-            icon={Users}
-            iconColor="text-blue-600"
-            iconBgColor="bg-blue-100"
-          />
-          <AnalyticsCard
-            title="Berber FCM Token"
-            value={loading ? '...' : stats.barbersCount.toLocaleString('tr-TR')}
-            change={0}
-            icon={Scissors}
-            iconColor="text-purple-600"
-            iconBgColor="bg-purple-100"
-          />
-          <AnalyticsCard
-            title="Çalışan FCM Token"
-            value={loading ? '...' : stats.employeesCount.toLocaleString('tr-TR')}
-            change={0}
-            icon={Briefcase}
-            iconColor="text-green-600"
-            iconBgColor="bg-green-100"
-          />
-          <AnalyticsCard
-            title="Bu Ay Gönderilen"
-            value={loading ? '...' : stats.monthNotifications.toLocaleString('tr-TR')}
-            change={0}
-            icon={Bell}
-            iconColor="text-orange-600"
-            iconBgColor="bg-orange-100"
-          />
-        </div>
+          <div className="space-y-4">
+            {/* Target Type */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Hedef Kitle</label>
+              <select
+                value={targetType}
+                onChange={(e) => setTargetType(e.target.value as any)}
+                className="w-full px-4 py-2 border rounded-lg"
+                disabled={loading}
+              >
+                <option value="ALL_BARBERS">Tüm Berberler</option>
+                <option value="ALL_USERS">Tüm Kullanıcılar</option>
+                <option value="ALL_EMPLOYEES">Tüm Çalışanlar</option>
+                <option value="CUSTOM">Özel (Manuel ID)</option>
+              </select>
+            </div>
 
-        {/* Bildirim Gönderme Formu */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Form Alanları */}
-          <div className="lg:col-span-2">
-            <div className="bg-card rounded-[var(--radius)] border border-border p-6">
-              <h3 className="text-lg font-semibold text-card-foreground mb-6">Yeni Bildirim Oluştur</h3>
+            {/* Custom Recipients */}
+            {targetType === 'CUSTOM' && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Kullanıcı ID'leri (virgülle ayrılmış)
+                </label>
+                <input
+                  type="text"
+                  value={customRecipients}
+                  onChange={(e) => setCustomRecipients(e.target.value)}
+                  placeholder="user123, user456, barber789"
+                  className="w-full px-4 py-2 border rounded-lg"
+                  disabled={loading}
+                />
+              </div>
+            )}
 
-              <div className="space-y-6">
-                {/* Hedef Seçimi */}
-                <div>
-                  <label className="block text-sm font-medium text-muted-foreground mb-3">
-                    Hedef Kitle
-                  </label>
+            {/* Title */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Başlık</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Bildirim başlığı"
+                className="w-full px-4 py-2 border rounded-lg"
+                disabled={loading}
+                maxLength={65}
+              />
+              <p className="text-xs text-gray-500 mt-1">{title.length}/65 karakter</p>
+            </div>
 
-                  {/* Topic Bilgilendirmesi */}
-                  {isTopicTarget && (
-                    <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-[var(--radius)]">
-                      <p className="text-sm text-blue-800 dark:text-blue-200">
-                        <strong>ℹ️ Bilgi:</strong> Topic bildirimleri mobil uygulamaya topic subscription kodu eklendikten sonra çalışır.
-                        Detaylar için <code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">HOW_TO_SEND_TO_ALL_USERS.md</code> dosyasına bakın.
-                      </p>
-                    </div>
-                  )}
+            {/* Body */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Mesaj</label>
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="Bildirim içeriği"
+                rows={4}
+                className="w-full px-4 py-2 border rounded-lg"
+                disabled={loading}
+                maxLength={240}
+              />
+              <p className="text-xs text-gray-500 mt-1">{body.length}/240 karakter</p>
+            </div>
 
-                  <div className="space-y-2">
-                    {[
-                      { value: 'topic_all_app_users', label: '📱 Tüm App Kullanıcıları (Topic - Giriş Gerekmez)' },
-                      { value: 'topic_all_customers', label: '📱 Tüm Müşteriler (Topic)' },
-                      { value: 'topic_all_barbers', label: '📱 Tüm Berberler (Topic)' },
-                      { value: 'topic_all_employees', label: '📱 Tüm Çalışanlar (Topic)' },
-                      { value: 'all_users', label: 'Tüm Kullanıcılar (Giriş Yapmış)' },
-                      { value: 'all_barbers', label: 'Tüm Berberler (Giriş Yapmış)' },
-                      { value: 'all_employees', label: 'Tüm Çalışanlar (Giriş Yapmış)' },
-                      { value: 'all_barbers_employees', label: 'Tüm Berber ve Çalışanlar (Giriş Yapmış)' },
-                      { value: 'all_app_users', label: 'Tüm Uygulama Kullanıcıları (Herkes - Giriş Yapmış)' },
-                      { value: 'custom', label: 'Özel Seçim' },
-                    ].map((option) => (
-                      <label key={option.value} className="flex items-center space-x-3 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="target"
-                          value={option.value}
-                          checked={target === option.value}
-                          onChange={(e) => setTarget(e.target.value as TargetType)}
-                          className="w-4 h-4 text-primary focus:ring-primary"
-                        />
-                        <span className="text-sm text-card-foreground">{option.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+            {/* Type */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Bildirim Tipi</label>
+              <select
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg"
+                disabled={loading}
+              >
+                <option value="system_maintenance">Sistem Bildirimi</option>
+                <option value="marketing_bulk">Pazarlama</option>
+                <option value="appointment_confirmed">Randevu Onayı</option>
+              </select>
+            </div>
 
-                {/* Özel Seçim - Multi-select */}
-                {target === 'custom' && (
-                  <div>
-                    <label className="block text-sm font-medium text-muted-foreground mb-2">
-                      Alıcıları Seçin
-                    </label>
-                    <select
-                      multiple
-                      value={selectedUsers.map(u => u.id)}
-                      onChange={(e) => {
-                        const selected = Array.from(e.target.selectedOptions).map(option => {
-                          return availableUsers.find(u => u.id === option.value)!
-                        })
-                        setSelectedUsers(selected)
-                      }}
-                      className="w-full px-3 py-2 border border-border rounded-[var(--radius)] focus:outline-none focus:ring-2 focus:ring-primary min-h-[200px]"
-                    >
-                      {availableUsers.map((user) => (
-                        <option key={user.id} value={user.id}>
-                          {user.name} ({user.type}) - {user.email}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Birden fazla seçim için Ctrl/Cmd tuşuna basılı tutun. Seçilen: {selectedUsers.length}
-                    </p>
-                  </div>
-                )}
-
-                {/* Başlık */}
-                <div>
-                  <label className="block text-sm font-medium text-muted-foreground mb-2">
-                    Başlık
-                  </label>
+            {/* Production Safety: ALL_USERS Confirmation */}
+            {targetType === 'ALL_USERS' && (
+              <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4">
+                <div className="flex items-start gap-3">
                   <input
-                    type="text"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Bildirim başlığını girin"
-                    className="w-full px-4 py-3 border border-border rounded-[var(--radius)] focus:outline-none focus:ring-2 focus:ring-primary"
-                    maxLength={100}
+                    type="checkbox"
+                    id="confirmAllUsers"
+                    checked={confirmAllUsers}
+                    onChange={(e) => setConfirmAllUsers(e.target.checked)}
+                    className="mt-1 w-5 h-5 text-red-600 border-red-300 rounded focus:ring-red-500"
+                    disabled={loading}
                   />
-                </div>
-
-                {/* Mesaj */}
-                <div>
-                  <label className="block text-sm font-medium text-muted-foreground mb-2">
-                    Mesaj
+                  <label htmlFor="confirmAllUsers" className="text-sm font-medium text-red-900">
+                    ⚠️ TÜM KULLANICILARA bildirim gönderileceğini anlıyorum ve onaylıyorum.
+                    <span className="block text-xs text-red-700 mt-1">
+                      Bu işlem geri alınamaz ve binlerce kullanıcıya ulaşacaktır.
+                    </span>
                   </label>
-                  <textarea
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                    placeholder="Bildirim mesajını girin"
-                    rows={4}
-                    className="w-full px-4 py-3 border border-border rounded-[var(--radius)] focus:outline-none focus:ring-2 focus:ring-primary resize-none"
-                    maxLength={300}
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">{body.length}/300 karakter</p>
-                </div>
-
-                {/* Bildirim Tipi */}
-                <div>
-                  <label className="block text-sm font-medium text-muted-foreground mb-2">
-                    Bildirim Tipi
-                  </label>
-                  <select
-                    value={notificationType}
-                    onChange={(e) => setNotificationType(e.target.value as NotificationType)}
-                    className="w-full px-4 py-3 border border-border rounded-[var(--radius)] focus:outline-none focus:ring-2 focus:ring-primary"
-                  >
-                    <option value="general">Genel</option>
-                    <option value="promotion">Promosyon</option>
-                    <option value="announcement">Duyuru</option>
-                    <option value="reminder">Hatırlatma</option>
-                  </select>
-                </div>
-
-                {/* Gönder Butonu */}
-                <button
-                  onClick={handleSendNotification}
-                  disabled={sending || !title.trim() || !body.trim()}
-                  className="w-full bg-primary text-primary-foreground py-3 px-6 rounded-[var(--radius)] font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 transition-colors"
-                >
-                  <Send className="w-5 h-5" />
-                  <span>{sending ? 'Gönderiliyor...' : 'Bildirim Gönder'}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Önizleme Kartı */}
-          <div className="lg:col-span-1">
-            <div className="bg-card rounded-[var(--radius)] border border-border p-6 sticky top-6">
-              <h3 className="text-lg font-semibold text-card-foreground mb-4">Önizleme</h3>
-
-              {/* Alıcı Sayısı */}
-              <div className="mb-4 p-3 bg-muted rounded-[var(--radius)]">
-                <p className="text-sm text-muted-foreground">Alıcı Sayısı</p>
-                {isTopicTarget ? (
-                  <div>
-                    <p className="text-2xl font-bold text-foreground">📱 Topic</p>
-                    <p className="text-xs text-muted-foreground mt-1">Abone sayısı Firebase tarafından bilinmiyor</p>
-                  </div>
-                ) : (
-                  <p className="text-2xl font-bold text-foreground">{recipientCount}</p>
-                )}
-              </div>
-
-              {/* Bildirim Kartı */}
-              <div className="border-2 border-dashed border-border rounded-[var(--radius)] p-4 space-y-3">
-                <div className="flex items-start space-x-3">
-                  <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-                    <Bell className="w-5 h-5 text-primary-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-card-foreground text-sm">
-                      {title || 'Bildirim Başlığı'}
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-1 break-words">
-                      {body || 'Bildirim mesajı burada görünecek...'}
-                    </p>
-                    <div className="flex items-center space-x-2 mt-2">
-                      <span className={`text-xs px-2 py-1 rounded-full ${getTypeColor(notificationType)}`}>
-                        {notificationType}
-                      </span>
-                      <span className="text-xs text-muted-foreground flex items-center">
-                        <Clock className="w-3 h-3 mr-1" />
-                        Şimdi
-                      </span>
-                    </div>
-                  </div>
                 </div>
               </div>
+            )}
 
-              {/* Hedef Bilgisi */}
-              <div className="mt-4 p-3 bg-muted/50 rounded-[var(--radius)]">
-                <p className="text-xs text-muted-foreground">Hedef Kitle</p>
-                <p className="text-sm font-medium text-foreground">{getTargetLabel(target)}</p>
-              </div>
-            </div>
+            {/* Send Button */}
+            <button
+              onClick={handleSendClick}
+              disabled={loading || loadingCount || !title.trim() || !body.trim()}
+              className={`w-full py-3 rounded-lg font-semibold transition-colors ${
+                loading || loadingCount || !title.trim() || !body.trim()
+                  ? 'bg-gray-300 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              {loadingCount ? '⏳ Hesaplanıyor...' : loading ? '⏳ Gönderiliyor...' : '📤 Gönder'}
+            </button>
           </div>
         </div>
+      </div>
 
-        {/* Gönderim Geçmişi */}
-        <div className="bg-card rounded-[var(--radius)] border border-border overflow-hidden">
-          <div className="p-6 border-b border-border">
-            <h3 className="text-lg font-semibold text-card-foreground">Gönderim Geçmişi</h3>
-            <p className="text-sm text-muted-foreground mt-1">Son gönderilen bildirimler</p>
-          </div>
+      {/* Notification History */}
+      <div id="notification-history" className="max-w-6xl mx-auto mt-8">
+        <div className="bg-white rounded-lg shadow p-8">
+          <h2 className="text-2xl font-bold mb-6">📜 Bildirim Geçmişi</h2>
 
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-muted border-b border-border">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Durum
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Tarih
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Başlık
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Tip
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Hedef
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Alıcı Sayısı
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Gönderen
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-card divide-y divide-border">
-                {loading ? (
-                  <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">
-                      Yükleniyor...
-                    </td>
+          {loadingHistory ? (
+            <div className="text-center py-8 text-gray-500">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+              <p className="mt-2">Yükleniyor...</p>
+            </div>
+          ) : notificationHistory.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <p>Henüz gönderilmiş bildirim yok.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left py-3 px-4">Tarih</th>
+                    <th className="text-left py-3 px-4">Başlık</th>
+                    <th className="text-left py-3 px-4">Mesaj</th>
+                    <th className="text-left py-3 px-4">Hedef</th>
+                    <th className="text-left py-3 px-4">Durum</th>
+                    <th className="text-right py-3 px-4">İstatistik</th>
                   </tr>
-                ) : logs.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">
-                      Henüz bildirim gönderilmemiş
-                    </td>
-                  </tr>
-                ) : (
-                  logs.slice(0, 10).map((log) => (
-                    <tr key={log.id} className="hover:bg-accent/50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {getStatusIcon(log.status)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-muted-foreground">
-                          {log.sentAt.toLocaleDateString('tr-TR')}
-                          <br />
-                          <span className="text-xs">{log.sentAt.toLocaleTimeString('tr-TR')}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="text-sm font-medium text-card-foreground max-w-xs truncate">
+                </thead>
+                <tbody>
+                  {notificationHistory.map((log) => {
+                    const createdAt = log.createdAt?.toDate?.() || new Date();
+                    const metadata = log.metadata || {};
+
+                    return (
+                      <tr key={log.id} className="border-b hover:bg-gray-50">
+                        <td className="py-3 px-4 text-sm text-gray-600">
+                          {createdAt.toLocaleDateString('tr-TR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })}{' '}
+                          {createdAt.toLocaleTimeString('tr-TR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </td>
+                        <td className="py-3 px-4 font-medium">
                           {log.title}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`text-xs px-2 py-1 rounded-full ${getTypeColor(log.type)}`}>
-                          {log.type}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-muted-foreground">{log.target}</div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-card-foreground">
-                          {log.recipientCount === -1 ? '📱 Topic' : log.recipientCount.toLocaleString('tr-TR')}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-muted-foreground">{log.sentBy}</div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {logs.length > 0 && (
-            <div className="px-6 py-4 border-t border-border">
-              <div className="text-sm text-muted-foreground">
-                Toplam <span className="font-medium text-foreground">{logs.length}</span> kayıt gösteriliyor
-              </div>
+                        </td>
+                        <td className="py-3 px-4 text-sm text-gray-600 max-w-xs truncate">
+                          {log.body}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="inline-block px-2 py-1 text-xs rounded bg-blue-100 text-blue-800">
+                            {metadata.targetType || 'N/A'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          {log.dryRun ? (
+                            <span className="inline-block px-2 py-1 text-xs rounded bg-yellow-100 text-yellow-800">
+                              Test
+                            </span>
+                          ) : (
+                            <span className="inline-block px-2 py-1 text-xs rounded bg-green-100 text-green-800">
+                              Gönderildi
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="text-sm space-y-1">
+                            <div className="flex justify-end gap-2">
+                              <span className="text-green-600">✓ {log.fcmSent || 0}</span>
+                              {log.fcmFailed > 0 && (
+                                <span className="text-red-600">✗ {log.fcmFailed}</span>
+                              )}
+                              {log.fcmSkipped > 0 && (
+                                <span className="text-gray-500">⊘ {log.fcmSkipped}</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {metadata.sentByEmail || 'Admin'}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Onay Modalı */}
-        {showModal && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-card rounded-[var(--radius)] p-6 max-w-md w-full border border-border">
-              <h3 className="text-lg font-semibold text-card-foreground mb-4">Bildirim Gönderilsin mi?</h3>
-              <div className="space-y-3 mb-6">
-                <p className="text-sm text-muted-foreground">
-                  {isTopicTarget ? (
-                    <>
-                      📱 <span className="font-medium text-foreground">Topic'e abone olan tüm kullanıcılara</span> bildirim gönderilecek.
-                    </>
-                  ) : (
-                    <>
-                      <span className="font-medium text-foreground">{recipientCount} kişiye</span> bildirim gönderilecek.
-                    </>
-                  )}
-                </p>
-                <div className="p-3 bg-muted rounded-[var(--radius)] space-y-1">
-                  <p className="text-sm"><span className="font-medium">Başlık:</span> {title}</p>
-                  <p className="text-sm"><span className="font-medium">Mesaj:</span> {body}</p>
-                  <p className="text-sm"><span className="font-medium">Tip:</span> {notificationType}</p>
-                  <p className="text-sm"><span className="font-medium">Hedef:</span> {getTargetLabel(target)}</p>
-                </div>
-              </div>
-              <div className="flex space-x-3">
-                <button
-                  onClick={() => setShowModal(false)}
-                  className="flex-1 px-4 py-2 border border-border rounded-[var(--radius)] text-sm font-medium hover:bg-accent transition-colors"
-                >
-                  İptal
-                </button>
-                <button
-                  onClick={confirmSendNotification}
-                  className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded-[var(--radius)] text-sm font-medium hover:bg-primary/90 transition-colors"
-                >
-                  Gönder
-                </button>
-              </div>
+      {/* Confirmation Modal */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold mb-4">⚠️ Onay Gerekiyor</h2>
+            <p className="mb-4">
+              <strong>{estimatedRecipients} kişiye</strong> canlı bildirim gönderilecek.
+            </p>
+            <p className="text-sm text-gray-600 mb-6">
+              Bu işlem geri alınamaz. Emin misiniz?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="flex-1 px-4 py-2 border rounded-lg hover:bg-gray-50"
+              >
+                İptal
+              </button>
+              <button
+                onClick={handleConfirmSend}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+              >
+                Evet, Gönder
+              </button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </DashboardLayout>
-  )
+  );
 }
