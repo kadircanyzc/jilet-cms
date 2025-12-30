@@ -409,50 +409,27 @@ export default function BarberDetailPage() {
   const handleSaveEmployee = async () => {
     if (!canEdit) return
 
-    // Validation
-    if (!employeeForm.firstName.trim()) {
-      alert('Lütfen ad giriniz!')
-      return
-    }
-    if (!employeeForm.lastName.trim()) {
-      alert('Lütfen soyad giriniz!')
-      return
-    }
-    if (!employeeForm.username.trim()) {
-      alert('Lütfen kullanıcı adı giriniz!')
-      return
-    }
-    if (!employeeForm.email.trim()) {
-      alert('Lütfen e-posta giriniz!')
-      return
-    }
-    if (!employeeForm.phone.trim()) {
-      alert('Lütfen telefon giriniz!')
-      return
-    }
-    if (!editingEmployee && !employeeForm.password.trim()) {
-      alert('Lütfen şifre giriniz!')
-      return
-    }
-
+    // No validation - allow partial updates
     try {
       setSaving(true)
 
       if (editingEmployee) {
-        // Update existing employee
-        const employeeData: any = {
-          firstName: employeeForm.firstName.trim(),
-          lastName: employeeForm.lastName.trim(),
-          username: employeeForm.username.trim(),
-          email: employeeForm.email.trim(),
-          phone: employeeForm.phone.trim(),
+        // Update existing employee - only update fields that are filled
+        const employeeData: any = {}
+
+        if (employeeForm.firstName.trim()) employeeData.firstName = employeeForm.firstName.trim()
+        if (employeeForm.lastName.trim()) employeeData.lastName = employeeForm.lastName.trim()
+        if (employeeForm.username.trim()) employeeData.username = employeeForm.username.trim()
+        if (employeeForm.email.trim()) employeeData.email = employeeForm.email.trim()
+        if (employeeForm.phone.trim()) employeeData.phone = employeeForm.phone.trim()
+
+        // Update basic info if any field is filled
+        if (Object.keys(employeeData).length > 0) {
+          await updateDoc(doc(db, 'employees', editingEmployee.id), employeeData)
         }
 
-        // Update basic info
-        await updateDoc(doc(db, 'employees', editingEmployee.id), employeeData)
-
-        // Update password separately if changed
-        if (employeeForm.password.trim() && employeeForm.password !== editingEmployee.password) {
+        // Update password separately if filled
+        if (employeeForm.password.trim()) {
           const passwordResponse = await fetch('/api/admin/reset-password', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -471,7 +448,14 @@ export default function BarberDetailPage() {
 
         alert('Çalışan güncellendi!')
       } else {
-        // Add new employee
+        // Add new employee - require all fields for new employees
+        if (!employeeForm.firstName.trim() || !employeeForm.lastName.trim() ||
+            !employeeForm.username.trim() || !employeeForm.email.trim() ||
+            !employeeForm.phone.trim() || !employeeForm.password.trim()) {
+          alert('Yeni çalışan eklerken tüm alanları doldurmalısınız!')
+          return
+        }
+
         const employeeData = {
           barberId,
           firstName: employeeForm.firstName.trim(),
@@ -1172,7 +1156,7 @@ export default function BarberDetailPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-muted-foreground mb-1">
-                      Ad <span className="text-destructive">*</span>
+                      Ad {!editingEmployee && <span className="text-destructive">*</span>}
                     </label>
                     <input
                       type="text"
@@ -1185,7 +1169,7 @@ export default function BarberDetailPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-muted-foreground mb-1">
-                      Soyad <span className="text-destructive">*</span>
+                      Soyad {!editingEmployee && <span className="text-destructive">*</span>}
                     </label>
                     <input
                       type="text"
@@ -1198,7 +1182,7 @@ export default function BarberDetailPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-muted-foreground mb-1">
-                      Kullanıcı Adı <span className="text-destructive">*</span>
+                      Kullanıcı Adı {!editingEmployee && <span className="text-destructive">*</span>}
                     </label>
                     <input
                       type="text"
@@ -1211,7 +1195,7 @@ export default function BarberDetailPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-muted-foreground mb-1">
-                      E-posta <span className="text-destructive">*</span>
+                      E-posta {!editingEmployee && <span className="text-destructive">*</span>}
                     </label>
                     <input
                       type="email"
@@ -1224,7 +1208,7 @@ export default function BarberDetailPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-muted-foreground mb-1">
-                      Telefon <span className="text-destructive">*</span>
+                      Telefon {!editingEmployee && <span className="text-destructive">*</span>}
                     </label>
                     <input
                       type="tel"
