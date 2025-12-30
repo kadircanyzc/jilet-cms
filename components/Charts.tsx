@@ -1,36 +1,113 @@
 'use client'
 
-import { LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { useState, useEffect } from 'react'
+import { AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { db } from '@/lib/firebase'
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore'
 
-// Line Chart Component
+// Line Chart Component - Günlük Randevu Takibi
 export function ViewsChart() {
-  const data = [
-    { name: 'Pzt', views: 4000, posts: 2400 },
-    { name: 'Sal', views: 3000, posts: 1398 },
-    { name: 'Çar', views: 2000, posts: 9800 },
-    { name: 'Per', views: 2780, posts: 3908 },
-    { name: 'Cum', views: 1890, posts: 4800 },
-    { name: 'Cmt', views: 2390, posts: 3800 },
-    { name: 'Paz', views: 3490, posts: 4300 },
-  ]
+  const [chartData, setChartData] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetchAppointmentStats()
+  }, [])
+
+  const fetchAppointmentStats = async () => {
+    try {
+      setLoading(true)
+
+      // Son 7 günün verilerini çek
+      const last7Days = []
+      const today = new Date()
+
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date(today)
+        date.setDate(date.getDate() - i)
+        date.setHours(0, 0, 0, 0)
+
+        const nextDate = new Date(date)
+        nextDate.setDate(nextDate.getDate() + 1)
+
+        last7Days.push({
+          date,
+          nextDate,
+          dayName: date.toLocaleDateString('tr-TR', { weekday: 'short' }),
+          fullDate: date.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit' })
+        })
+      }
+
+      // Her gün için randevu sayısını hesapla
+      const statsPromises = last7Days.map(async ({ date, nextDate, dayName, fullDate }) => {
+        const appointmentsRef = collection(db, 'appointments')
+        const q = query(
+          appointmentsRef,
+          where('createdAt', '>=', Timestamp.fromDate(date)),
+          where('createdAt', '<', Timestamp.fromDate(nextDate))
+        )
+
+        const snapshot = await getDocs(q)
+        const totalAppointments = snapshot.size
+
+        // Onaylanmış randevular
+        const confirmedAppointments = snapshot.docs.filter(
+          doc => doc.data().status === 'confirmed'
+        ).length
+
+        return {
+          name: dayName,
+          fullDate: fullDate,
+          appointments: totalAppointments,
+          confirmed: confirmedAppointments
+        }
+      })
+
+      const stats = await Promise.all(statsPromises)
+      setChartData(stats)
+
+      console.log('📊 Appointment stats loaded:', stats)
+    } catch (error) {
+      console.error('Error fetching appointment stats:', error)
+      // Hata durumunda boş veri göster
+      setChartData([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="bg-card rounded-[var(--radius)] border border-border p-6">
+        <h3 className="text-lg font-semibold text-card-foreground mb-6">Günlük Randevu İstatistikleri (Son 7 Gün)</h3>
+        <div className="flex items-center justify-center h-[300px]">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="bg-card rounded-[var(--radius)] border border-border p-6">
-      <h3 className="text-lg font-semibold text-card-foreground mb-6">Görüntülenme & Gönderiler</h3>
+      <h3 className="text-lg font-semibold text-card-foreground mb-6">Günlük Randevu İstatistikleri (Son 7 Gün)</h3>
       <ResponsiveContainer width="100%" height={300}>
-        <AreaChart data={data}>
+        <AreaChart data={chartData}>
           <defs>
-            <linearGradient id="colorViews" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="colorAppointments" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#2563EB" stopOpacity={0.3}/>
               <stop offset="95%" stopColor="#2563EB" stopOpacity={0}/>
             </linearGradient>
-            <linearGradient id="colorPosts" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#7C3AED" stopOpacity={0.3}/>
-              <stop offset="95%" stopColor="#7C3AED" stopOpacity={0}/>
+            <linearGradient id="colorConfirmed" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#10B981" stopOpacity={0.3}/>
+              <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis dataKey="name" stroke="#9CA3AF" style={{ fontSize: '12px' }} />
+          <XAxis
+            dataKey="name"
+            stroke="#9CA3AF"
+            style={{ fontSize: '12px' }}
+          />
           <YAxis stroke="#9CA3AF" style={{ fontSize: '12px' }} />
           <Tooltip
             contentStyle={{
@@ -39,10 +116,32 @@ export function ViewsChart() {
               borderRadius: '8px',
               fontSize: '14px'
             }}
+            labelFormatter={(value, payload) => {
+              if (payload && payload[0]) {
+                return `${payload[0].payload.fullDate} (${value})`
+              }
+              return value
+            }}
           />
           <Legend wrapperStyle={{ fontSize: '14px' }} />
-          <Area type="monotone" dataKey="views" stroke="#2563EB" strokeWidth={2} fillOpacity={1} fill="url(#colorViews)" name="Görüntülenme" />
-          <Area type="monotone" dataKey="posts" stroke="#7C3AED" strokeWidth={2} fillOpacity={1} fill="url(#colorPosts)" name="Gönderiler" />
+          <Area
+            type="monotone"
+            dataKey="appointments"
+            stroke="#2563EB"
+            strokeWidth={2}
+            fillOpacity={1}
+            fill="url(#colorAppointments)"
+            name="Toplam Randevu"
+          />
+          <Area
+            type="monotone"
+            dataKey="confirmed"
+            stroke="#10B981"
+            strokeWidth={2}
+            fillOpacity={1}
+            fill="url(#colorConfirmed)"
+            name="Onaylanan"
+          />
         </AreaChart>
       </ResponsiveContainer>
     </div>

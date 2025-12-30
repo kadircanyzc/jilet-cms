@@ -23,6 +23,7 @@ const navigation = [
 ]
 
 const analyticsSubmenu = [
+  { name: 'Analytics V1 (Production)', href: '/analytics-v1' },
   { name: 'Kampanya Performansı', href: '/analytics/campaigns' },
   { name: 'Kullanıcı Davranışı', href: '/analytics/behavior' },
 ]
