@@ -80,7 +80,7 @@ interface Barber {
   workingHours?: WorkingHours
   services?: Service[]
   employees?: Employee[]
-  shopImages?: string[]
+  shopImages?: (string | { url: string; uploadedAt?: any })[]
   role?: string
   active?: boolean
   createdAt?: any
@@ -331,6 +331,14 @@ export default function BarberDetailPage() {
     if (!editedBarber || !editedBarber.shopImages) return
     const updatedImages = editedBarber.shopImages.filter((_, i) => i !== index)
     setEditedBarber({ ...editedBarber, shopImages: updatedImages })
+  }
+
+  // Helper function to get image URL from either string or object
+  const getImageUrl = (image: string | { url: string; uploadedAt?: any }): string => {
+    if (typeof image === 'string') {
+      return image
+    }
+    return image.url || ''
   }
 
   // Employee management functions
@@ -1096,39 +1104,42 @@ export default function BarberDetailPage() {
               <p className="text-muted-foreground">Henüz görsel eklenmemiş</p>
             ) : (
               <div className="space-y-3">
-                {(editing ? editedBarber?.shopImages : barber.shopImages)?.map((image, index) => (
-                  <div key={index} className="flex items-center space-x-3">
-                    {editing && editedBarber ? (
-                      <>
-                        <input
-                          type="text"
-                          value={image}
-                          onChange={(e) => handleImageChange(index, e.target.value)}
-                          placeholder="Görsel URL'si"
-                          className="flex-1 px-3 py-2 border border-border rounded-[var(--radius)] bg-background"
-                        />
-                        <button
-                          onClick={() => handleRemoveImage(index)}
-                          className="p-2 hover:bg-destructive/10 rounded-[var(--radius)] text-destructive"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </>
-                    ) : (
-                      <div className="flex items-center space-x-3">
-                        <img
-                          src={image}
-                          alt={`Görsel ${index + 1}`}
-                          className="w-32 h-32 object-cover rounded-[var(--radius)]"
-                          onError={(e) => {
-                            e.currentTarget.src = 'https://via.placeholder.com/128'
-                          }}
-                        />
-                        <p className="text-sm text-muted-foreground flex-1 truncate">{image}</p>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {(editing ? editedBarber?.shopImages : barber.shopImages)?.map((image, index) => {
+                  const imageUrl = getImageUrl(image)
+                  return (
+                    <div key={index} className="flex items-center space-x-3">
+                      {editing && editedBarber ? (
+                        <>
+                          <input
+                            type="text"
+                            value={imageUrl}
+                            onChange={(e) => handleImageChange(index, e.target.value)}
+                            placeholder="Görsel URL'si"
+                            className="flex-1 px-3 py-2 border border-border rounded-[var(--radius)] bg-background"
+                          />
+                          <button
+                            onClick={() => handleRemoveImage(index)}
+                            className="p-2 hover:bg-destructive/10 rounded-[var(--radius)] text-destructive"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <div className="flex items-center space-x-3">
+                          <img
+                            src={imageUrl}
+                            alt={`Görsel ${index + 1}`}
+                            className="w-32 h-32 object-cover rounded-[var(--radius)]"
+                            onError={(e) => {
+                              e.currentTarget.src = 'https://via.placeholder.com/128'
+                            }}
+                          />
+                          <p className="text-sm text-muted-foreground flex-1 truncate">{imageUrl}</p>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>

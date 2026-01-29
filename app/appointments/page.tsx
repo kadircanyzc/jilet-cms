@@ -13,10 +13,17 @@ import {
   Phone,
   Mail,
   User,
-  X
+  X,
+  Trash2,
+  CheckSquare,
+  Ban,
+  MoreVertical
 } from 'lucide-react';
 import { collection, query, onSnapshot, doc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { useToast, ToastContainer } from '@/components/Toast';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Appointment {
   id: string;
@@ -67,6 +74,8 @@ const statusConfig = {
 };
 
 export default function AppointmentsPage() {
+  const { user } = useAuth();
+  const { toasts, showToast, closeToast } = useToast();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,6 +84,17 @@ export default function AppointmentsPage() {
   const [barberFilter, setBarberFilter] = useState<string>('all');
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  
+  // Confirm Dialog States
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmText: '',
+    variant: 'primary' as 'danger' | 'primary' | 'success',
+    onConfirm: () => {},
+  });
 
   // Real-time appointments listener
   useEffect(() => {
@@ -135,14 +155,118 @@ export default function AppointmentsPage() {
 
   // Update appointment status
   const updateStatus = async (appointmentId: string, newStatus: string) => {
+    if (actionLoading) return;
+    
     try {
-      await updateDoc(doc(db, 'appointments', appointmentId), {
-        status: newStatus,
-        updatedAt: new Date()
+      setActionLoading(true);
+      
+      const response = await fetch('/api/appointments', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          appointmentId,
+          status: newStatus,
+          adminEmail: user?.email,
+        }),
       });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        showToast('Randevu durumu başarıyla güncellendi', 'success');
+      } else {
+        showToast(data.error || 'Güncelleme başarısız', 'error');
+      }
     } catch (error) {
       console.error('Error updating appointment:', error);
+      showToast('Bir hata oluştu', 'error');
+    } finally {
+      setActionLoading(false);
     }
+  };
+
+  // Delete appointment
+  const deleteAppointment = async (appointmentId: string) => {
+    if (actionLoading) return;
+    
+    try {
+      setActionLoading(true);
+      
+      const response = await fetch(`/api/appointments?id=${appointmentId}&adminEmail=${user?.email}`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        showToast('Randevu başarıyla silindi', 'success');
+        setIsModalOpen(false);
+      } else {
+        showToast(data.error || 'Silme işlemi başarısız', 'error');
+      }
+    } catch (error) {
+      console.error('Error deleting appointment:', error);
+      showToast('Bir hata oluştu', 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Confirm action handlers
+  const handleDeleteClick = (appointment: Appointment) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Randevuyu Sil',
+      message: `${appointment.userName} adlı müşteriye ait randevuyu kalıcı olarak silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`,
+      confirmText: 'Sil',
+      variant: 'danger',
+      onConfirm: () => {
+        deleteAppointment(appointment.id);
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+      },
+    });
+  };
+
+  const handleCancelClick = (appointment: Appointment) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Randevuyu İptal Et',
+      message: `${appointment.userName} adlı müşterinin randevusunu iptal etmek istediğinize emin misiniz?`,
+      confirmText: 'İptal Et',
+      variant: 'danger',
+      onConfirm: () => {
+        updateStatus(appointment.id, 'cancelled');
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+      },
+    });
+  };
+
+  const handleConfirmClick = (appointment: Appointment) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Randevuyu Onayla',
+      message: `${appointment.userName} adlı müşterinin randevusunu onaylamak istediğinize emin misiniz?`,
+      confirmText: 'Onayla',
+      variant: 'success',
+      onConfirm: () => {
+        updateStatus(appointment.id, 'confirmed');
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+      },
+    });
+  };
+
+  const handleCompleteClick = (appointment: Appointment) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Randevuyu Tamamla',
+      message: `${appointment.userName} adlı müşterinin randevusunu tamamlandı olarak işaretlemek istediğinize emin misiniz?`,
+      confirmText: 'Tamamla',
+      variant: 'success',
+      onConfirm: () => {
+        updateStatus(appointment.id, 'completed');
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+      },
+    });
   };
 
   // Get user initials for avatar
@@ -171,7 +295,18 @@ export default function AppointmentsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto">
+      <ToastContainer toasts={toasts} onClose={closeToast} />
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmText={confirmDialog.confirmText}
+        confirmVariant={confirmDialog.variant}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+      />
+      
+      <div className="max-w-full mx-auto">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
@@ -287,12 +422,9 @@ export default function AppointmentsPage() {
                       Tarih & Saat
                     </th>
                     <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Ücret
-                    </th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Durum
                     </th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-48">
                       İşlemler
                     </th>
                   </tr>
@@ -345,36 +477,22 @@ export default function AppointmentsPage() {
                           {appointment.time}
                         </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        ₺{appointment.price}
-                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <StatusBadge status={appointment.status} />
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center space-x-3">
-                          <button
-                            onClick={() => {
-                              setSelectedAppointment(appointment);
-                              setIsModalOpen(true);
-                            }}
-                            className="text-blue-600 hover:text-blue-800 transition-colors"
-                          >
-                            <Eye className="w-5 h-5" />
-                          </button>
-                          {appointment.status !== 'cancelled' && appointment.status !== 'completed' && (
-                            <select
-                              className="px-3 py-1 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                              value={appointment.status}
-                              onChange={(e) => updateStatus(appointment.id, e.target.value)}
-                            >
-                              <option value="pending">Bekliyor</option>
-                              <option value="confirmed">Onayla</option>
-                              <option value="completed">Tamamla</option>
-                              <option value="cancelled">İptal Et</option>
-                            </select>
-                          )}
-                        </div>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <AppointmentActions
+                          appointment={appointment}
+                          onView={() => {
+                            setSelectedAppointment(appointment);
+                            setIsModalOpen(true);
+                          }}
+                          onConfirm={() => handleConfirmClick(appointment)}
+                          onCancel={() => handleCancelClick(appointment)}
+                          onComplete={() => handleCompleteClick(appointment)}
+                          onDelete={() => handleDeleteClick(appointment)}
+                          loading={actionLoading}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -393,9 +511,97 @@ export default function AppointmentsPage() {
             setIsModalOpen(false);
             setSelectedAppointment(null);
           }}
-          onUpdateStatus={updateStatus}
+          onConfirm={() => handleConfirmClick(selectedAppointment)}
+          onCancel={() => handleCancelClick(selectedAppointment)}
+          onComplete={() => handleCompleteClick(selectedAppointment)}
+          onDelete={() => handleDeleteClick(selectedAppointment)}
+          loading={actionLoading}
         />
       )}
+    </div>
+  );
+}
+
+// Appointment Actions Component
+interface AppointmentActionsProps {
+  appointment: Appointment;
+  onView: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onComplete: () => void;
+  onDelete: () => void;
+  loading: boolean;
+}
+
+function AppointmentActions({
+  appointment,
+  onView,
+  onConfirm,
+  onCancel,
+  onComplete,
+  onDelete,
+  loading,
+}: AppointmentActionsProps) {
+  const [showMenu, setShowMenu] = useState(false);
+  
+  const canConfirm = appointment.status === 'pending';
+  const canComplete = appointment.status === 'confirmed';
+  const canCancel = appointment.status !== 'cancelled' && appointment.status !== 'completed';
+
+  return (
+    <div className="flex items-center justify-center space-x-1">
+      {/* View Button */}
+      <button
+        onClick={onView}
+        className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+        title="Detayları Görüntüle"
+      >
+        <Eye className="w-4 h-4" />
+      </button>
+
+      {/* Quick Actions */}
+      {canConfirm && (
+        <button
+          onClick={onConfirm}
+          disabled={loading}
+          className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+          title="Onayla"
+        >
+          <CheckSquare className="w-4 h-4" />
+        </button>
+      )}
+
+      {canComplete && (
+        <button
+          onClick={onComplete}
+          disabled={loading}
+          className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+          title="Tamamla"
+        >
+          <CheckCircle className="w-4 h-4" />
+        </button>
+      )}
+
+      {canCancel && (
+        <button
+          onClick={onCancel}
+          disabled={loading}
+          className="p-1.5 text-orange-600 hover:bg-orange-50 rounded-lg transition-colors disabled:opacity-50"
+          title="İptal Et"
+        >
+          <Ban className="w-4 h-4" />
+        </button>
+      )}
+
+      {/* Delete Button */}
+      <button
+        onClick={onDelete}
+        disabled={loading}
+        className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+        title="Sil"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
     </div>
   );
 }
@@ -445,7 +651,11 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // Appointment Detail Modal Component
-function AppointmentModal({ appointment, onClose, onUpdateStatus }: any) {
+function AppointmentModal({ appointment, onClose, onConfirm, onCancel, onComplete, onDelete, loading }: any) {
+  const canConfirm = appointment.status === 'pending';
+  const canComplete = appointment.status === 'confirmed';
+  const canCancel = appointment.status !== 'cancelled' && appointment.status !== 'completed';
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
@@ -546,40 +756,60 @@ function AppointmentModal({ appointment, onClose, onUpdateStatus }: any) {
           )}
 
           {/* Action Buttons */}
-          <div className="flex space-x-4">
-            {appointment.status === 'pending' && (
-              <>
-                <button
-                  onClick={() => {
-                    onUpdateStatus(appointment.id, 'confirmed');
-                    onClose();
-                  }}
-                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-colors font-medium"
-                >
-                  Randevuyu Onayla
-                </button>
-                <button
-                  onClick={() => {
-                    onUpdateStatus(appointment.id, 'cancelled');
-                    onClose();
-                  }}
-                  className="flex-1 border-2 border-red-600 text-red-600 py-3 rounded-xl hover:bg-red-50 transition-colors font-medium"
-                >
-                  Randevuyu İptal Et
-                </button>
-              </>
-            )}
-            {appointment.status === 'confirmed' && (
+          <div className="grid grid-cols-2 gap-3">
+            {canConfirm && (
               <button
                 onClick={() => {
-                  onUpdateStatus(appointment.id, 'completed');
+                  onConfirm();
                   onClose();
                 }}
-                className="w-full bg-green-600 text-white py-3 rounded-xl hover:bg-green-700 transition-colors font-medium"
+                disabled={loading}
+                className="flex items-center justify-center space-x-2 bg-green-600 text-white py-3 rounded-xl hover:bg-green-700 transition-colors font-medium disabled:opacity-50"
               >
-                Tamamlandı Olarak İşaretle
+                <CheckSquare className="w-5 h-5" />
+                <span>Onayla</span>
               </button>
             )}
+            
+            {canComplete && (
+              <button
+                onClick={() => {
+                  onComplete();
+                  onClose();
+                }}
+                disabled={loading}
+                className="flex items-center justify-center space-x-2 bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+              >
+                <CheckCircle className="w-5 h-5" />
+                <span>Tamamlandı</span>
+              </button>
+            )}
+            
+            {canCancel && (
+              <button
+                onClick={() => {
+                  onCancel();
+                  onClose();
+                }}
+                disabled={loading}
+                className="flex items-center justify-center space-x-2 border-2 border-orange-600 text-orange-600 py-3 rounded-xl hover:bg-orange-50 transition-colors font-medium disabled:opacity-50"
+              >
+                <Ban className="w-5 h-5" />
+                <span>İptal Et</span>
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                onDelete();
+                onClose();
+              }}
+              disabled={loading}
+              className="flex items-center justify-center space-x-2 border-2 border-red-600 text-red-600 py-3 rounded-xl hover:bg-red-50 transition-colors font-medium disabled:opacity-50"
+            >
+              <Trash2 className="w-5 h-5" />
+              <span>Randevuyu Sil</span>
+            </button>
           </div>
         </div>
       </div>

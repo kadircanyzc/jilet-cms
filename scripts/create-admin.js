@@ -16,9 +16,9 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 
 async function createAdmin() {
-  const email = 'admin2@kestir.com';
-  const password = 'Admin2024!'; // Change this!
-  const name = 'Admin User 2';
+  const email = 'newadmin@kestir.com';
+  const password = 'NewAdmin2026!'; // Use this to login!
+  const name = 'New Admin User';
   const role = 'super_admin';
 
   try {
