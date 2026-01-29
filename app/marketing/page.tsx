@@ -4,8 +4,9 @@ import DashboardLayout from '@/components/DashboardLayout'
 import AnalyticsCard from '@/components/AnalyticsCard'
 import { useEffect, useState } from 'react'
 import { db } from '@/lib/firebase'
-import { collection, getDocs, query, where, orderBy as fbOrderBy } from 'firebase/firestore'
-import { MessageCircle, Star, TrendingUp, AlertTriangle, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { collection, getDocs, query, where, orderBy as fbOrderBy, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore'
+import { MessageCircle, Star, TrendingUp, AlertTriangle, ThumbsUp, ThumbsDown, Trash2, X } from 'lucide-react'
+import { getAuth } from 'firebase/auth'
 
 interface Review {
   id: string
@@ -15,6 +16,12 @@ interface Review {
   comment: string
   date: string
   barberId: string
+  isDeleted?: boolean
+}
+
+interface DeleteModalState {
+  isOpen: boolean
+  review: Review | null
 }
 
 interface MarketingStats {
@@ -36,10 +43,88 @@ export default function MarketingPage() {
   const [reviews, setReviews] = useState<Review[]>([])
   const [loading, setLoading] = useState(true)
   const [filterRating, setFilterRating] = useState<number | null>(null)
+  const [deleteModal, setDeleteModal] = useState<DeleteModalState>({ isOpen: false, review: null })
+  const [deleting, setDeleting] = useState(false)
+  const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' }>({ show: false, message: '', type: 'success' })
 
   useEffect(() => {
     fetchMarketingData()
   }, [])
+
+  // Toast gösterim fonksiyonu
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ show: true, message, type })
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000)
+  }
+
+  // Silme modalını aç
+  const openDeleteModal = (review: Review) => {
+    setDeleteModal({ isOpen: true, review })
+  }
+
+  // Silme modalını kapat
+  const closeDeleteModal = () => {
+    setDeleteModal({ isOpen: false, review: null })
+  }
+
+  // Yorumu soft delete ile sil
+  const handleDeleteReview = async () => {
+    if (!deleteModal.review) return
+
+    setDeleting(true)
+    try {
+      const auth = getAuth()
+      const currentUser = auth.currentUser
+
+      // Soft delete - isDeleted: true olarak işaretle
+      const reviewRef = doc(db, 'reviews', deleteModal.review.id)
+      await updateDoc(reviewRef, {
+        isDeleted: true,
+        deletedAt: serverTimestamp(),
+        deletedBy: currentUser?.email || 'unknown_admin'
+      })
+
+      // Silme logunu kaydet
+      await addDoc(collection(db, 'deletionLogs'), {
+        action: 'review_deleted',
+        reviewId: deleteModal.review.id,
+        barberId: deleteModal.review.barberId,
+        barberName: deleteModal.review.barberName,
+        userName: deleteModal.review.userName,
+        rating: deleteModal.review.rating,
+        comment: deleteModal.review.comment,
+        deletedBy: currentUser?.email || 'unknown_admin',
+        deletedAt: serverTimestamp()
+      })
+
+      // State'i güncelle (sayfa yenilemeden)
+      setReviews(prevReviews => prevReviews.filter(r => r.id !== deleteModal.review!.id))
+
+      // İstatistikleri güncelle
+      setStats(prevStats => {
+        const deletedReview = deleteModal.review!
+        const newTotalReviews = prevStats.totalReviews - 1
+        const newPositiveReviews = deletedReview.rating >= 4 ? prevStats.positiveReviews - 1 : prevStats.positiveReviews
+        const newNegativeReviews = deletedReview.rating <= 2 ? prevStats.negativeReviews - 1 : prevStats.negativeReviews
+
+        return {
+          ...prevStats,
+          totalReviews: newTotalReviews,
+          positiveReviews: newPositiveReviews,
+          negativeReviews: newNegativeReviews
+        }
+      })
+
+      closeDeleteModal()
+      showToast('Yorum başarıyla silindi', 'success')
+      console.log('✅ Review deleted successfully:', deleteModal.review.id)
+    } catch (error) {
+      console.error('❌ Error deleting review:', error)
+      showToast('Yorum silinirken bir hata oluştu', 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const fetchMarketingData = async () => {
     try {
@@ -79,8 +164,12 @@ export default function MarketingPage() {
 
       const reviewsData: Review[] = []
 
-      for (const doc of reviewsSnapshot.docs) {
-        const data = doc.data()
+      for (const docSnapshot of reviewsSnapshot.docs) {
+        const data = docSnapshot.data()
+
+        // Silinen yorumları atla
+        if (data.isDeleted) continue
+
         const createdAt = data.createdAt?.toDate()
 
         totalRating += data.rating || 0
@@ -101,7 +190,7 @@ export default function MarketingPage() {
         const barberName = barbersMap.get(data.barberId) || 'Bilinmeyen Berber'
 
         reviewsData.push({
-          id: doc.id,
+          id: docSnapshot.id,
           barberName,
           userName: data.userName || 'Anonim',
           rating: data.rating || 0,
@@ -111,8 +200,9 @@ export default function MarketingPage() {
         })
       }
 
-      // Ortalamalar
-      const avgRating = totalRating / reviewsSnapshot.size
+      // Ortalamalar (sadece silinmemiş yorumları say)
+      const activeReviewCount = reviewsData.length
+      const avgRating = activeReviewCount > 0 ? totalRating / activeReviewCount : 0
       const recentAvg = recentCount > 0 ? recentRatings / recentCount : 0
       const previousAvg = previousCount > 0 ? previousRatings / previousCount : 0
 
@@ -126,7 +216,7 @@ export default function MarketingPage() {
       const negativeReviews = reviewsData.filter(r => r.rating <= 2).length
 
       setStats({
-        totalReviews: reviewsSnapshot.size,
+        totalReviews: activeReviewCount,
         averageRating: Math.round(avgRating * 10) / 10,
         positiveReviews,
         negativeReviews,
@@ -261,18 +351,21 @@ export default function MarketingPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Yorum
                   </th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    İşlem
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-card divide-y divide-border">
                 {loading ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">
                       Yükleniyor...
                     </td>
                   </tr>
                 ) : filteredReviews.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">
                       {filterRating ? `${filterRating} yıldızlı yorum bulunamadı` : 'Henüz yorum yapılmamış'}
                     </td>
                   </tr>
@@ -296,6 +389,15 @@ export default function MarketingPage() {
                           {review.comment}
                         </div>
                       </td>
+                      <td className="px-6 py-4 text-center">
+                        <button
+                          onClick={() => openDeleteModal(review)}
+                          className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Yorumu Sil"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -310,6 +412,73 @@ export default function MarketingPage() {
             </div>
           </div>
         </div>
+
+        {/* Delete Confirmation Modal */}
+        {deleteModal.isOpen && deleteModal.review && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-card rounded-lg border border-border p-6 max-w-md w-full mx-4 shadow-xl">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-card-foreground">Yorumu Sil</h3>
+                <button
+                  onClick={closeDeleteModal}
+                  className="p-1 hover:bg-muted rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-muted-foreground" />
+                </button>
+              </div>
+
+              <div className="mb-6">
+                <p className="text-muted-foreground mb-4">
+                  Bu yorumu silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.
+                </p>
+                <div className="bg-muted p-4 rounded-lg space-y-2">
+                  <p className="text-sm">
+                    <span className="font-medium text-card-foreground">Kullanıcı:</span>{' '}
+                    <span className="text-muted-foreground">{deleteModal.review.userName}</span>
+                  </p>
+                  <p className="text-sm">
+                    <span className="font-medium text-card-foreground">Berber:</span>{' '}
+                    <span className="text-muted-foreground">{deleteModal.review.barberName}</span>
+                  </p>
+                  <p className="text-sm">
+                    <span className="font-medium text-card-foreground">Puan:</span>{' '}
+                    <span className="text-muted-foreground">{deleteModal.review.rating} / 5</span>
+                  </p>
+                  <p className="text-sm">
+                    <span className="font-medium text-card-foreground">Yorum:</span>{' '}
+                    <span className="text-muted-foreground">{deleteModal.review.comment}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={closeDeleteModal}
+                  disabled={deleting}
+                  className="px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted rounded-lg transition-colors"
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={handleDeleteReview}
+                  disabled={deleting}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {deleting ? 'Siliniyor...' : 'Sil'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Toast Notification */}
+        {toast.show && (
+          <div className={`fixed bottom-4 right-4 z-50 px-6 py-3 rounded-lg shadow-lg transition-all ${
+            toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+          }`}>
+            {toast.message}
+          </div>
+        )}
       </div>
     </DashboardLayout>
   )

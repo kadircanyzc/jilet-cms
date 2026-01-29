@@ -2,133 +2,217 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
-    function isSignedIn() {
+    /* ================= HELPERS ================= */
+
+    function isAuth() {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
     }
 
-    // Users collection
+    function isAdmin() {
+      return isAuth() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    /* ================= USERS ================= */
+
     match /users/{userId} {
-      // Users can read and write their own data
-      allow read, write: if isOwner(userId);
+      allow create: if
+        request.auth != null &&
+        request.auth.uid == userId &&
+        request.resource.data.role == "customer" &&
+        request.resource.data.kvkkAccepted == true;
+
+      allow read, update: if isOwner(userId);
+      allow delete: if false;
     }
 
-    // Barbers collection
-    match /barbers/{barberId} {
-      // Anyone can read barber data (for discovering barbers)
-      allow read: if true;
+    /* ================= BARBERS ================= */
 
-      // Barber owner can write their own data (slots, settings, etc.)
-      // This allows slot management from mobile app
-      allow write: if isSignedIn();
+match /barbers/{barberId} {
+  allow read: if true;
 
-      // Barber slots subcollection (if using subcollection structure)
-      match /slots/{slotId} {
-        // Anyone can read slots (for booking)
-        allow read: if true;
+  // CREATE: Self-registration (V1)
+  allow create: if isOwner(barberId);
 
-        // Only barber owner can write slots
-        allow write: if isSignedIn();
-      }
+  // UPDATE: Owner can update existing fields only (safe for gallery updates)
+  allow update: if isOwner(barberId)
+    && request.resource.data.keys().hasAll(resource.data.keys());
 
-      // Barber employees subcollection (if using subcollection structure)
-      match /employees/{employeeId} {
-        // Anyone authenticated can read employees (for selection during booking)
-        allow read: if isSignedIn();
+  // DELETE: Admin only
+  allow delete: if isAdmin();
+}
+    /* ================= EMPLOYEES ================= */
 
-        // Only barber owner can write employees
-        allow write: if isSignedIn();
-      }
-
-      // Barber services subcollection
-      match /services/{serviceId} {
-        // Anyone can read services (for booking)
-        allow read: if true;
-
-        // Only barber owner can write services
-        allow write: if isSignedIn();
-      }
-    }
-
-    // Appointments collection - Allow authenticated users
-    match /appointments/{appointmentId} {
-      // Allow read for authenticated users (for displaying appointments)
-      allow read: if isSignedIn();
-
-      // Allow create if user is authenticated
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-
-      // Allow update for authenticated users (user can manage their appointment)
-      allow update: if isSignedIn();
-
-      // Allow delete for authenticated users
-      allow delete: if isSignedIn();
-    }
-
-    // Favorites collection
-    match /favorites/{favoriteId} {
-      // Users can read and write their own favorites
-      allow read, write: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-    }
-
-    // Reviews collection
-    match /reviews/{reviewId} {
-      // Anyone can read reviews
-      allow read: if true;
-
-      // Only the review author can write
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
-    }
-
-    // Notifications collection
-    match /notifications/{notificationId} {
-      // Users can read their own notifications (check both userId and recipientId)
-      allow read: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.recipientId == request.auth.uid
-      );
-
-      // System can create notifications (via Cloud Functions or Admin SDK)
-      allow create: if true;  // Allow creation from anywhere (Cloud Functions, Admin SDK)
-
-      // Users can update their own notifications (mark as read)
-      allow update: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.recipientId == request.auth.uid
-      );
-    }
-
-    // Admins collection - CMS admin users
-    match /admins/{adminId} {
-      // Allow read only for the specific admin user (can read their own admin doc)
-      allow read: if isSignedIn() && request.auth.uid == adminId;
-
-      // Allow create for new admins (initial setup or admin creation)
-      allow create: if true;  // Allow creation from Admin SDK
-
-      // Allow update/delete only for the admin themselves
-      allow update, delete: if isSignedIn() && request.auth.uid == adminId;
-    }
-
-    // Employees collection - standalone employees collection
     match /employees/{employeeId} {
-      // Allow read for anyone (CMS and mobile app needs to read all employees)
+      // PUBLIC INFO ONLY (NO SLOTS TRUST)
       allow read: if true;
 
-      // Allow create/update/delete for authenticated users (barbers managing employees and slots)
-      // This allows barber owners to update employee slots from mobile app
-      allow write: if isSignedIn();
+      // Only admin / CF
+      allow create, delete: if isAdmin();
+
+      // UPDATE: Sadece Cloud Function (Admin SDK)
+      // employeeUpdateServices, updateEmployeeSlots, etc.
+      allow update: if false;
     }
 
-    // Default: deny all other access
-    match /{document=**} {
+    /* ================= EMPLOYEE PRIVATE ================= */
+
+    match /employee_private/{employeeId} {
       allow read, write: if false;
+    }
+
+    /* ================= APPOINTMENTS ================= */
+
+    match /appointments/{appointmentId} {
+
+      // READ - Herkes kendi ilgili randevuları görebilir
+      allow read: if true;
+      // NOT: Employee client-side filter yapacak (employeeId == myId)
+
+      // CREATE → CF ONLY
+      // CREATE → CF ONLY
+      allow create: if false;
+
+      // UPDATE → CF ONLY
+      // customerCancelAppointment, employeeConfirmAppointment, employeeCompleteAppointment
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    /* ================= REVIEWS ================= */
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+
+      // Create: Auth gerekli (CF eligibility check yapacak ama rules allow etmeli)
+      allow create: if isAuth() && isOwner(request.resource.data.userId);
+
+      // Owner OR Admin can update/delete (soft delete for admin)
+      allow update, delete: if isAuth() && (isOwner(resource.data.userId) || isAdmin());
+    }
+
+    /* ================= DELETION LOGS ================= */
+
+    match /deletionLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    /* ================= FAVORITES ================= */
+
+    match /favorites/{favoriteId} {
+      allow read: if true;
+      allow create: if isAuth() && request.auth.uid == request.resource.data.userId;
+      allow delete: if isAuth() && request.auth.uid == resource.data.userId;
+      allow update: if false;
+    }
+
+    /* ================= NOTIFICATIONS ================= */
+
+    match /notifications/{notificationId} {
+      allow read: if true;
+      // NOT: Client recipientId ile filter yapacak
+
+      allow create: if isAuth();
+      // Cloud Functions notification oluştururken gerekli
+
+      allow update: if isAuth() && (
+        (
+          isOwner(resource.data.recipientId)
+          && request.resource.data.diff(resource.data)
+            .affectedKeys().hasOnly(['read','readAt'])
+        )
+        || isAdmin()
+      );
+
+      allow delete: if isAuth() && isOwner(resource.data.recipientId);
+    }
+
+    /* ================= FCM TOKENS (Device-Centric) ================= */
+
+    match /fcm_tokens/{tokenHash} {
+      // READ: Nobody reads directly (only via Cloud Functions)
+      allow read: if false;
+
+      // CREATE/UPDATE: Only via Cloud Functions (registerFcmToken)
+      // Clients call Cloud Function, not Firestore directly
+      allow create, update: if false;
+
+      // DELETE: Only via Cloud Functions (invalidateFcmToken)
+      allow delete: if false;
+    }
+
+    match /fcm_token_audit/{auditId} {
+      // Audit log - nobody reads/writes (only Cloud Functions)
+      allow read, write: if false;
+    }
+
+    /* ================= ADMIN ================= */
+
+    match /admins/{adminId} {
+      allow read: if isAuth() && isOwner(adminId);
+      allow write: if isAdmin();
+    }
+
+    match /pending_auth_requests/{requestId} {
+      allow create: if isAuth();
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /scheduled_notifications/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /analytics_events/{eventId} {
+      allow create: if isAuth();
+      allow read, update, delete: if isAdmin();
+    }
+
+    /* ================= ANALYTICS V1 ================= */
+
+    // Raw events - mobile write only (anonymous allowed for analytics)
+    match /analytics_events_raw/{eventId} {
+      allow create: if true;     // Anyone can write analytics (authenticated or anonymous)
+      allow read: if false;       // Nobody reads (only Cloud Functions)
+      allow update, delete: if false;
+    }
+
+    // Daily aggregates - CMS read only
+    match /analytics_daily/{date} {
+      allow read: if isAdmin();   // CMS dashboard reads
+      allow write: if false;      // Only Cloud Functions write
+    }
+
+    // Per-barber aggregates - CMS read only
+    match /analytics_barber_daily/{docId} {
+      allow read: if isAdmin();   // CMS dashboard reads
+      allow write: if false;      // Only Cloud Functions write
+    }
+
+    /* ================= DEVICES ================= */
+    // Device-based notification tokens
+    // Any device can register and update its own document
+    match /devices/{deviceId} {
+      allow read: if true;        // Any authenticated user can read
+      allow create: if true;      // Any device can register (even before auth)
+      allow update: if true;      // Device can update its token/role
+      allow delete: if false;     // Never delete - preserve notification capability
+    }
+
+    /* ================= FCM TOKENS (V1) ================= */
+    // Employee FCM tokens for notifications
+    // ALL writes via Cloud Functions (Admin SDK) only
+    // Client cannot create, update, or delete tokens
+    match /fcmtokens/{tokenId} {
+      allow read: if false;           // Only Cloud Functions read
+      allow create: if false;         // Only Admin SDK creates
+      allow update: if false;         // Only Admin SDK updates
+      allow delete: if false;         // Never delete (audit trail)
     }
   }
 }

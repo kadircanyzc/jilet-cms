@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, adminMessaging } from '@/lib/firebase-admin';
 
+/**
+ * Send notification API - Uses new fcm_tokens collection
+ * 
+ * POST /api/send-notification
+ * Body: { recipientId, title, body, type? }
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -16,49 +22,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get FCM token - try users, barbers, then employees
-    let fcmToken: string | null = null;
-    let userType: string = '';
+    // Get FCM tokens from fcm_tokens collection (SINGLE SOURCE OF TRUTH)
+    const tokensSnapshot = await adminDb
+      .collection('fcm_tokens')
+      .where('userId', '==', recipientId)
+      .where('isValid', '==', true)
+      .get();
 
-    // Try users collection
-    const userDoc = await adminDb.collection('users').doc(recipientId).get();
-    if (userDoc.exists && userDoc.data()?.fcmToken) {
-      fcmToken = userDoc.data()!.fcmToken;
-      userType = 'user';
-      console.log('✅ FCM token found in users collection');
-    }
-
-    // Try barbers collection
-    if (!fcmToken) {
-      const barberDoc = await adminDb.collection('barbers').doc(recipientId).get();
-      if (barberDoc.exists && barberDoc.data()?.fcmToken) {
-        fcmToken = barberDoc.data()!.fcmToken;
-        userType = 'barber';
-        console.log('✅ FCM token found in barbers collection');
-      }
-    }
-
-    // Try employees collection
-    if (!fcmToken) {
-      const employeeDoc = await adminDb.collection('employees').doc(recipientId).get();
-      if (employeeDoc.exists && employeeDoc.data()?.fcmToken) {
-        fcmToken = employeeDoc.data()!.fcmToken;
-        userType = 'employee';
-        console.log('✅ FCM token found in employees collection');
-      }
-    }
-
-    if (!fcmToken) {
-      console.error('❌ No FCM token found for recipient:', recipientId);
+    if (tokensSnapshot.empty) {
+      console.error('❌ No valid FCM tokens found for recipient:', recipientId);
       return NextResponse.json(
         {
-          error: 'No FCM token found for recipient',
+          error: 'No FCM tokens found for recipient',
           recipientId,
           message: 'User may not have logged in or granted notification permissions'
         },
         { status: 404 }
       );
     }
+
+    const tokens = tokensSnapshot.docs.map(doc => ({
+      token: doc.data().token,
+      platform: doc.data().platform,
+      tokenHash: doc.id,
+    }));
+
+    console.log(`✅ Found ${tokens.length} valid FCM token(s) for recipient`);
 
     // Save notification to Firestore
     const notificationRef = await adminDb.collection('notifications').add({
@@ -72,36 +61,75 @@ export async function POST(request: NextRequest) {
 
     console.log('💾 Notification saved to Firestore:', notificationRef.id);
 
-    // Send push notification
-    const message = {
-      notification: {
-        title,
-        body: messageBody,
-      },
-      data: {
-        notificationId: notificationRef.id,
-        type,
-      },
-      token: fcmToken,
-      android: {
-        priority: 'high' as const,
-        notification: {
-          sound: 'default',
-          channelId: 'default',
-        },
-      },
-    };
+    // Send push notification to all valid tokens
+    const sendResults = await Promise.allSettled(
+      tokens.map(async ({ token, platform, tokenHash }) => {
+        const message = {
+          notification: {
+            title,
+            body: messageBody,
+          },
+          data: {
+            notificationId: notificationRef.id,
+            type,
+          },
+          token,
+          android: {
+            priority: 'high' as const,
+            notification: {
+              sound: 'default',
+              channelId: 'default',
+            },
+          },
+        };
 
-    const response = await adminMessaging.send(message);
-    console.log('✅ Push notification sent successfully:', response);
+        try {
+          const response = await adminMessaging.send(message);
+          console.log(`✅ Push notification sent to ${platform} device:`, response);
+          
+          // Update lastUsedAt
+          await adminDb.collection('fcm_tokens').doc(tokenHash).update({
+            lastUsedAt: new Date(),
+          });
+          
+          return { success: true, platform, messageId: response };
+        } catch (error: any) {
+          console.error(`❌ Failed to send to ${platform} device:`, error);
+          
+          // Auto-invalidate stale tokens
+          const staleErrorCodes = [
+            'messaging/registration-token-not-registered',
+            'messaging/invalid-registration-token',
+          ];
+          
+          if (staleErrorCodes.includes(error.code)) {
+            console.warn(`🗑️ Invalidating stale token: ${tokenHash.substring(0, 12)}...`);
+            await adminDb.collection('fcm_tokens').doc(tokenHash).update({
+              isValid: false,
+              invalidatedAt: new Date(),
+              invalidationReason: 'stale_detected',
+              staleErrorCode: error.code,
+            });
+          }
+          
+          return { success: false, platform, error: error.message };
+        }
+      })
+    );
+
+    const successCount = sendResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failCount = sendResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
+
+    console.log(`✅ Notification sent: ${successCount} success, ${failCount} failed`);
 
     return NextResponse.json({
       success: true,
       notificationId: notificationRef.id,
-      messageId: response,
       recipientId,
-      userType,
-      message: 'Notification sent successfully'
+      tokensTotal: tokens.length,
+      tokensSent: successCount,
+      tokensFailed: failCount,
+      message: `Notification sent to ${successCount}/${tokens.length} devices`
     });
 
   } catch (error: any) {
@@ -124,7 +152,7 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     status: 'ok',
-    message: 'Notification API is running',
+    message: 'Notification API is running (using fcm_tokens collection)',
     timestamp: new Date().toISOString()
   });
 }
