@@ -639,7 +639,11 @@ function StatCard({ icon: Icon, title, value, color }: StatCardProps) {
 
 // Status Badge Component
 function StatusBadge({ status }: { status: string }) {
-  const config = statusConfig[status as keyof typeof statusConfig];
+  const config = statusConfig[status as keyof typeof statusConfig] || {
+    label: status || 'Bilinmiyor',
+    color: 'bg-gray-100 text-gray-800 border-gray-300',
+    icon: AlertCircle,
+  };
   const Icon = config.icon;
 
   return (
