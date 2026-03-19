@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { LogIn, Mail, Lock } from 'lucide-react'
 
+const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!
+
 function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -14,7 +16,6 @@ function LoginForm() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // Redirect if already logged in
   useEffect(() => {
     if (user) {
       const redirect = searchParams.get('redirect') || '/'
@@ -22,23 +23,56 @@ function LoginForm() {
     }
   }, [user, router, searchParams])
 
+  useEffect(() => {
+    const script = document.createElement('script')
+    script.src = `https://www.google.com/recaptcha/api.js?render=${RECAPTCHA_SITE_KEY}`
+    script.async = true
+    document.head.appendChild(script)
+    return () => {
+      document.head.removeChild(script)
+    }
+  }, [])
+
+  const getRecaptchaToken = (): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      (window as any).grecaptcha.ready(async () => {
+        try {
+          const token = await (window as any).grecaptcha.execute(RECAPTCHA_SITE_KEY, { action: 'login' })
+          resolve(token)
+        } catch (err) {
+          reject(err)
+        }
+      })
+    })
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
 
     try {
-      await signIn(email, password)
+      const token = await getRecaptchaToken()
 
-      // Wait a bit for cookie to be set
+      const verifyRes = await fetch('/api/verify-recaptcha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+
+      if (!verifyRes.ok) {
+        setError('Güvenlik doğrulaması başarısız. Lütfen tekrar deneyin.')
+        return
+      }
+
+      await signIn(email, password)
       await new Promise(resolve => setTimeout(resolve, 500))
 
       const redirect = searchParams.get('redirect') || '/'
-      console.log('🔄 Redirecting to:', redirect)
       router.push(redirect)
     } catch (error: any) {
       console.error('Login error:', error)
-      if (error.message.includes('admin')) {
+      if (error.message?.includes('admin')) {
         setError('Bu hesap admin yetkisine sahip değil!')
       } else if (error.code === 'auth/invalid-credential') {
         setError('Email veya şifre hatalı!')
