@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     const userId = userRecord.uid;
 
     // Create barber document
-    const barberData = {
+    const barberData: Record<string, any> = {
       shopName: formData.shopName,
       name: formData.shopName,
       ownerName: formData.ownerName,
